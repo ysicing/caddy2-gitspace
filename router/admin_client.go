@@ -178,7 +178,7 @@ func (c *AdminAPIClient) GetRoute(ctx context.Context, routeID string) (*RouteCo
 	}
 
 	// 解析响应
-	var rawConfig map[string]interface{}
+	var rawConfig map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&rawConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -189,19 +189,19 @@ func (c *AdminAPIClient) GetRoute(ctx context.Context, routeID string) (*RouteCo
 	}
 
 	// 提取 domain（match.host[0]）
-	if match, ok := rawConfig["match"].([]interface{}); ok && len(match) > 0 {
-		if matchItem, ok := match[0].(map[string]interface{}); ok {
-			if hosts, ok := matchItem["host"].([]interface{}); ok && len(hosts) > 0 {
+	if match, ok := rawConfig["match"].([]any); ok && len(match) > 0 {
+		if matchItem, ok := match[0].(map[string]any); ok {
+			if hosts, ok := matchItem["host"].([]any); ok && len(hosts) > 0 {
 				config.Domain, _ = hosts[0].(string)
 			}
 		}
 	}
 
 	// 提取 targetAddr（upstreams[0].dial）
-	if handle, ok := rawConfig["handle"].([]interface{}); ok && len(handle) > 0 {
-		if handleItem, ok := handle[0].(map[string]interface{}); ok {
-			if upstreams, ok := handleItem["upstreams"].([]interface{}); ok && len(upstreams) > 0 {
-				if upstream, ok := upstreams[0].(map[string]interface{}); ok {
+	if handle, ok := rawConfig["handle"].([]any); ok && len(handle) > 0 {
+		if handleItem, ok := handle[0].(map[string]any); ok {
+			if upstreams, ok := handleItem["upstreams"].([]any); ok && len(upstreams) > 0 {
+				if upstream, ok := upstreams[0].(map[string]any); ok {
 					config.TargetAddr, _ = upstream["dial"].(string)
 				}
 			}
@@ -233,7 +233,7 @@ func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]*RouteConfig, error)
 	}
 
 	// 解析响应（routes 是一个数组）
-	var routes []map[string]interface{}
+	var routes []map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -249,19 +249,19 @@ func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]*RouteConfig, error)
 		config := &RouteConfig{ID: id}
 
 		// 提取 domain（match.host[0]）
-		if match, ok := route["match"].([]interface{}); ok && len(match) > 0 {
-			if matchItem, ok := match[0].(map[string]interface{}); ok {
-				if hosts, ok := matchItem["host"].([]interface{}); ok && len(hosts) > 0 {
+		if match, ok := route["match"].([]any); ok && len(match) > 0 {
+			if matchItem, ok := match[0].(map[string]any); ok {
+				if hosts, ok := matchItem["host"].([]any); ok && len(hosts) > 0 {
 					config.Domain, _ = hosts[0].(string)
 				}
 			}
 		}
 
 		// 提取 targetAddr（upstreams[0].dial）
-		if handle, ok := route["handle"].([]interface{}); ok && len(handle) > 0 {
-			if handleItem, ok := handle[0].(map[string]interface{}); ok {
-				if upstreams, ok := handleItem["upstreams"].([]interface{}); ok && len(upstreams) > 0 {
-					if upstream, ok := upstreams[0].(map[string]interface{}); ok {
+		if handle, ok := route["handle"].([]any); ok && len(handle) > 0 {
+			if handleItem, ok := handle[0].(map[string]any); ok {
+				if upstreams, ok := handleItem["upstreams"].([]any); ok && len(upstreams) > 0 {
+					if upstream, ok := upstreams[0].(map[string]any); ok {
 						config.TargetAddr, _ = upstream["dial"].(string)
 					}
 				}

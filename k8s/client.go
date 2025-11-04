@@ -64,8 +64,8 @@ func PatchDeploymentAnnotation(
 	annotations map[string]string,
 ) error {
 	// 构造 patch 数据
-	patchData := map[string]interface{}{
-		"metadata": map[string]interface{}{
+	patchData := map[string]any{
+		"metadata": map[string]any{
 			"annotations": annotations,
 		},
 	}

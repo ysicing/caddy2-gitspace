@@ -126,8 +126,8 @@ podInformer := factory.Core().V1().Pods().Informer()
 port := deployment.Annotations["gitspace.caddy.default.port"]
 
 // 写回域名注解
-patch := map[string]interface{}{
-    "metadata": map[string]interface{}{
+patch := map[string]any{
+    "metadata": map[string]any{
         "annotations": map[string]string{
             "gitspace.caddy.route.url": fmt.Sprintf("%s.%s", name, baseDomain),
         },
