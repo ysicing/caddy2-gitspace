@@ -55,30 +55,47 @@ K8s Watcher (Caddy 模块)
 Caddy 删除路由
 ```
 
-### Pod IP 变化处理（重要）
+### Pod 生命周期处理（重要）
 
-**策略：删除 + 重建**
+**关键理解**：Pod 删除后创建的是**全新的 Pod**，不是"重启"
+
+**Kubernetes 行为**：
+- Pod 删除 → Kubernetes 触发 Pod Delete 事件
+- Deployment Controller 创建新 Pod → 触发 Pod Add 事件（不是 Update）
+- 新 Pod 拥有新的名称、新的 UID、新的 IP
+- Pod 在同一生命周期内 IP 不会变化
+
+**策略：基于事件的路由管理**
 
 ```
-Pod 删除事件
+场景：用户删除 Pod（或 Pod 崩溃）
+
+1. Pod Delete 事件
     ↓
-调用 Admin API 删除旧路由
+   调用 Admin API 删除旧路由
     ↓
-新 Pod 就绪事件
+2. 新 Pod Add 事件（未就绪，忽略）
     ↓
-调用 Admin API 创建新路由（新 Pod IP）
+3. 新 Pod Update 事件（变为就绪）
+    ↓
+   调用 Admin API 创建新路由（新 Pod IP）
 ```
+
+**事件处理**：
+- `handlePodAdd`: 新 Pod 创建且就绪 → 创建路由
+- `handlePodUpdate`: Pod 就绪状态变化 → 创建/删除路由
+- `handlePodDelete`: Pod 删除 → 删除路由
 
 **权衡**：
-- ✅ 实现简单，逻辑清晰
+- ✅ 实现简单，逻辑清晰，符合 Kubernetes 事件模型
 - ✅ 避免无效路由（指向已删除的 Pod）
-- ⚠️ 有短暂无路由窗口（通常 < 1 秒）
+- ⚠️ 有短暂无路由窗口（通常 < 1 秒，从 Pod 删除到新 Pod 就绪）
 - ⚠️ 该窗口期间的请求会 404
 
-**不采用 PATCH 更新的原因**：
-- Admin API 对单个路由的就地更新支持有限
-- DELETE + CREATE 更可靠，幂等性更好
-- 单副本场景下，Pod 重启本身就有服务中断
+**为什么不尝试保持路由**：
+- 新 Pod 的 IP 无法预知，只能等待新 Pod 创建
+- 单副本场景下，Pod 删除本身就意味着服务中断
+- 如果需要零停机，应该使用多副本 + Service（不在本插件范围内）
 
 ---
 
