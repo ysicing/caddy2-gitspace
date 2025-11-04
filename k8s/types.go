@@ -1,0 +1,53 @@
+package k8s
+
+import (
+	"fmt"
+	"strconv"
+
+	corev1 "k8s.io/api/core/v1"
+)
+
+// 注解常量
+const (
+	// AnnotationPort Deployment 上指定目标端口的注解键
+	AnnotationPort = "gitspace.caddy.default.port"
+
+	// AnnotationURL 路由创建成功后写回的域名注解键
+	AnnotationURL = "gitspace.caddy.route.url"
+
+	// AnnotationSynced 路由同步时间戳注解键
+	AnnotationSynced = "gitspace.caddy.route.synced-at"
+
+	// AnnotationRouteID 路由 ID 注解键
+	AnnotationRouteID = "gitspace.caddy.route.id"
+)
+
+// isPodReady 检查 Pod 是否就绪
+func IsPodReady(pod *corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// getPortFromAnnotation 从 Deployment 注解中读取端口
+// 如果注解不存在或无效，返回 defaultPort
+func GetPortFromAnnotation(annotations map[string]string, defaultPort int) (int, error) {
+	portStr, exists := annotations[AnnotationPort]
+	if !exists {
+		return defaultPort, nil
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid port annotation '%s': %w", portStr, err)
+	}
+
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("port out of range (1-65535): %d", port)
+	}
+
+	return port, nil
+}
