@@ -12,35 +12,59 @@
 ## 1. Caddy v2 扩展开发模式
 
 ###  决策
-开发独立的 Kubernetes Watcher 程序，通过 Caddy Admin API 管理路由，不作为 Caddy 模块运行。
+使用 Caddy v2 模块系统开发扩展，编译为 Caddy 模块，通过 Caddyfile 指令配置。
 
 ### 理由
-- 插件职责单一：只负责监听 K8s 事件并调用 Admin API
-- 不涉及 HTTP 流量处理，无需实现 Caddy handler
-- 可独立部署（Sidecar 模式或独立进程）
-- 开发和测试更简单，不依赖 Caddy 模块系统
-- 可以用任何语言实现（本项目使用 Go）
+- Caddy v2 采用模块化架构，所有功能通过模块注册
+- 作为模块运行，无需独立进程管理（Sidecar）
+- 可以使用 Caddy 的 Admin API 进行路由管理
+- 支持热重载配置，无需重启服务
+- 部署简单：使用 xcaddy 编译即可
 
 ### 考虑的替代方案
-- **Caddy 模块 + HTTP handler**：被拒绝，违反单一职责原则，插件不应处理 HTTP 流量
+- **独立进程 + Admin API**：被拒绝，需要额外的进程管理和通信复杂度
 - **修改 Caddy 核心代码**：被拒绝，违反扩展原则，难以维护和升级
 - **使用 Caddyfile 配置**：被拒绝，需要动态路由，静态配置无法满足需求
 
-### 关键组件
+### 关键API
 ```go
-// 主程序结构
-type K8sWatcherApp struct {
-    Config       *config.Config
-    AdminClient  *router.AdminAPIClient  // Caddy Admin API 客户端
-    Tracker      *router.RouteIDTracker  // Route ID 映射
-    Watcher      *k8s.Watcher           // K8s 事件监听器
-    ctx          context.Context
-    cancel       context.CancelFunc
+// 模块接口
+type Module interface {
+    CaddyModule() ModuleInfo
 }
 
-// 不需要实现 caddy.Module 接口
-// 不需要实现 caddyhttp.Handler 接口
+// HTTP App 模块（用于注册路由管理逻辑）
+type App interface {
+    Start() error
+    Stop() error
+}
+
+// 配置器接口
+type Provisioner interface {
+    Provision(Context) error
+}
+
+// 验证器接口
+type Validator interface {
+    Validate() error
+}
 ```
+
+### 模块注册示例
+```go
+func init() {
+    caddy.RegisterModule(K8sRouter{})
+}
+
+func (K8sRouter) CaddyModule() caddy.ModuleInfo {
+    return caddy.ModuleInfo{
+        ID:  "http.handlers.k8s_router",  // 或 apps.k8s_router
+        New: func() caddy.Module { return new(K8sRouter) },
+    }
+}
+```
+
+**注意**：插件作为 Caddy App 运行，不实现 HTTP handler 接口（不处理用户请求），只通过 Admin API 管理路由。
 
 ---
 

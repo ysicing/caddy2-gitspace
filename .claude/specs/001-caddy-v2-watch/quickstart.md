@@ -75,86 +75,108 @@ kubectl get rolebinding caddy-k8s-router -n default
 
 ---
 
-## 步骤 2：构建 Caddy 扩展
+## 步骤 2：使用 xcaddy 编译 Caddy（含 K8s 插件）
 
-### 2.1 初始化 Go 模块
+### 2.1 安装 xcaddy
+
+xcaddy 是 Caddy 的自定义构建工具，用于编译包含第三方模块的 Caddy。
 
 ```bash
-cd caddy2-k8s
-go mod init github.com/ysicing/caddy2-k8s
-go mod tidy
+go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 ```
 
-### 2.2 添加依赖
+### 2.2 编译包含 K8s 插件的 Caddy
 
 ```bash
-go get github.com/caddyserver/caddy/v2@latest
-go get k8s.io/client-go@latest
-go get k8s.io/api@latest
-go get k8s.io/apimachinery@latest
+# 在项目根目录下执行
+xcaddy build \
+  --with github.com/ysicing/caddy2-k8s=.
 ```
 
-### 2.3 编译（开发模式）
+这将生成一个名为 `caddy` 的可执行文件，其中包含了 K8s 路由插件。
+
+### 2.3 验证插件已加载
 
 ```bash
-go build -o caddy-k8s .
+./caddy list-modules | grep k8s
+```
+
+预期输出：
+```
+http.handlers.k8s_router
 ```
 
 ### 2.4 构建 Docker 镜像
 
 ```bash
-docker build -t caddy-k8s-router:latest .
+docker build -t caddy-k8s-router:latest -f Dockerfile .
 ```
 
 **Dockerfile 示例**：
 ```dockerfile
+# 第一阶段：编译 Caddy（含 K8s 插件）
 FROM golang:1.25.3-alpine AS builder
 WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 go build -o caddy-k8s .
 
+# 安装 xcaddy
+RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+
+# 复制源代码
+COPY . .
+
+# 使用 xcaddy 编译 Caddy（包含本地模块）
+RUN xcaddy build --with github.com/ysicing/caddy2-k8s=.
+
+# 第二阶段：运行时镜像
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
-COPY --from=builder /app/caddy-k8s .
-EXPOSE 80 443
-CMD ["./caddy-k8s", "run", "--config", "/etc/caddy/config.json"]
+
+# 复制编译好的 Caddy
+COPY --from=builder /app/caddy .
+
+EXPOSE 80 443 2019
+CMD ["./caddy", "run", "--config", "/etc/caddy/Caddyfile"]
 ```
 
 ---
 
 ## 步骤 3：部署 Caddy 到 Kubernetes
 
-### 3.1 创建 ConfigMap
+### 3.1 创建 Caddyfile ConfigMap
 
 ```bash
-kubectl create configmap caddy-config --from-file=config.json -n default
+kubectl create configmap caddy-config \
+  --from-literal=Caddyfile="$(cat <<'EOF'
+{
+    admin localhost:2019
+    persist_config off
+}
+
+:80 {
+    k8s_router {
+        namespace default
+        base_domain example.com
+        default_port 8089
+    }
+}
+EOF
+)" \
+  -n default
 ```
 
-**config.json 示例**：
-```json
-{
-  "apps": {
-    "http": {
-      "servers": {
-        "k8s_router": {
-          "listen": [":80"],
-          "routes": [{
-            "handle": [{
-              "handler": "k8s_router",
-              "namespace": "default",
-              "base_domain": "example.com",
-              "default_port": 8089
-            }]
-          }]
-        }
-      }
-    }
-  }
-}
-```
+**Caddyfile 解释**：
+- `admin localhost:2019`：启用 Admin API（仅容器内访问）
+- `persist_config off`：关闭配置持久化（插件会动态管理路由）
+- `k8s_router`：启用 K8s 路由插件
+  - `namespace default`：监听的 K8s 命名空间
+  - `base_domain example.com`：路由域名后缀
+  - `default_port 8089`：默认端口（当 Deployment 缺少端口注解时使用）
+
+**注意**：`k8s_router` 指令会：
+1. 在 Caddy 启动时初始化插件
+2. 启动 Kubernetes Informer 监听 Deployment/Pod 事件
+3. 通过 Admin API 动态添加/删除路由（不在 Caddyfile 中显示）
 
 ### 3.2 创建 Deployment
 

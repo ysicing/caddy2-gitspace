@@ -76,20 +76,23 @@
 
 ### 验收场景
 
-**场景 1：创建 Deployment 并自动生成路由**
-1. **假定** Kubernetes 集群中监控的命名空间为空，**当** 用户创建一个名为 "vscode" 的 Deployment，并在注解中指定端口为 8080，**那么** Caddy 自动创建一个从 "vscode.example" 到该 Pod IP:8080 的路由
+**场景 1：创建单副本 Deployment 并自动生成路由**
+1. **假定** Kubernetes 集群中监控的命名空间为空，**当** 用户创建一个名为 "vscode" 的 Deployment（replicas=1），并在注解中指定端口为 8080，**那么** Caddy 自动创建一个从 "vscode.example" 到该 Pod IP:8080 的路由
 
-**场景 2：Deployment 扩容时的路由行为**
-2. **假定** 已存在一个 Deployment "vscode" 及其路由，**当** 用户将副本数从 1 扩展到 3，**那么** 路由应该能够将流量分发到所有健康的 Pod
+**场景 2：Deployment 缩容至 0 时移除路由**
+2. **假定** 存在一个运行中的 Deployment "vscode"（replicas=1）及其路由，**当** 用户将副本数缩减到 0，**那么** Caddy 自动移除 "vscode.example" 的路由配置
 
-**场景 3：Deployment 缩容至 0 时移除路由**
-3. **假定** 存在一个运行中的 Deployment "vscode" 及其路由，**当** 用户将副本数缩减到 0，**那么** Caddy 自动移除 "vscode.example" 的路由配置
+**场景 3：删除 Deployment 时清理路由**
+3. **假定** 存在一个运行中的 Deployment "vscode" 及其路由，**当** 用户删除该 Deployment，**那么** Caddy 自动移除 "vscode.example" 的路由配置
 
-**场景 4：删除 Deployment 时清理路由**
-4. **假定** 存在一个运行中的 Deployment "vscode" 及其路由，**当** 用户删除该 Deployment，**那么** Caddy 自动移除 "vscode.example" 的路由配置
+**场景 4：Pod 重启时路由自动更新**
+4. **假定** 存在一个运行中的 Deployment "vscode" 及其路由（指向 Pod IP 10.0.0.1），**当** 该 Pod 被删除并重新创建（新 IP 10.0.0.2），**那么** Caddy 自动更新路由指向新的 Pod IP
 
 **场景 5：多个不同类型的 Deployment**
-5. **假定** 命名空间中已有 "vscode" Deployment，**当** 用户创建新的 "jupyter" Deployment 并指定端口 8888，**那么** Caddy 同时维护 "vscode.example" 和 "jupyter.example" 两个独立路由
+5. **假定** 命名空间中已有 "vscode" Deployment，**当** 用户创建新的 "jupyter" Deployment（replicas=1）并指定端口 8888，**那么** Caddy 同时维护 "vscode.example" 和 "jupyter.example" 两个独立路由
+
+**场景 6：多副本 Deployment 被忽略**
+6. **假定** 用户创建一个 Deployment "web-app"（replicas=3），**那么** 插件不会为该 Deployment 创建路由（仅支持单副本）
 
 ### 边缘情况
 - 当 Deployment 的 Pod 还未就绪时，路由应该如何处理？
@@ -124,23 +127,24 @@
 - **FR-010**：系统必须在路由创建成功后，将生成的域名信息以注解方式写回 Deployment
 
 **副本与 Pod 管理**
-- **FR-011**：系统假设所有 Deployment 都是单副本，不需要处理多副本负载均衡
-- **FR-012**：系统必须能够动态更新路由以反映 Pod IP 的变化（如 Pod 重启）
+- **FR-011**：系统必须只处理单副本（replicas=1）的 Deployment，多副本 Deployment 会被忽略
+- **FR-012**：系统必须能够动态更新路由以反映 Pod IP 的变化（通过删除旧路由 + 创建新路由）
 - **FR-013**：系统必须只为就绪状态的 Pod 创建路由
+- **FR-014**：系统必须在 Deployment 副本数从 1 变为其他值时移除路由（不支持扩缩容）
 
 **配置与注解**
-- **FR-014**：系统必须支持通过 Deployment 注解 `gitspace.caddy.default.port` 指定目标端口
-- **FR-015**：系统必须在 Deployment 缺少端口注解时，使用默认端口 8089
-- **FR-016**：系统必须支持通过 Caddy 配置文件指定基础域名
-- **FR-017**：系统必须支持通过配置指定要监听的命名空间（单个命名空间）
+- **FR-015**：系统必须支持通过 Deployment 注解 `gitspace.caddy.default.port` 指定目标端口
+- **FR-016**：系统必须在 Deployment 缺少端口注解时，使用默认端口 8089
+- **FR-017**：系统必须支持通过 Caddy 配置文件指定基础域名
+- **FR-018**：系统必须支持通过配置指定要监听的命名空间（单个命名空间）
 
 **错误处理与可靠性**
-- **FR-018**：系统必须在无法连接到 Kubernetes API 时记录错误
-- **FR-019**：系统必须能够在 Caddy 扩展重启后重新同步所有路由配置
-- **FR-020**：系统必须验证从注解中读取的端口号有效性（范围 1-65535）
+- **FR-019**：系统必须在无法连接到 Kubernetes API 时记录错误
+- **FR-020**：系统必须能够在 Caddy 扩展重启后重新同步所有路由配置
+- **FR-021**：系统必须验证从注解中读取的端口号有效性（范围 1-65535）
 
 **状态反馈**
-- **FR-021**：系统必须提供扩展的健康状态接口用于监控
+- **FR-022**：系统必须提供扩展的健康状态接口用于监控
 
 ### 关键实体 *（如果功能涉及数据则包含）*
 

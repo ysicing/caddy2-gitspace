@@ -426,12 +426,49 @@
 
 ## 阶段 3.4：集成 (T022-T025)
 
-### T022 实现 EventHandler 连接 Watcher 和 AdminAPIClient
-**文件**：`main.go`（EventHandler 实现）
+### T022 实现 Caddy 模块注册和配置加载
+**文件**：`module.go`
+**操作**：
+- 实现 Caddy Module 接口：
+  ```go
+  func init() {
+      caddy.RegisterModule(K8sRouter{})
+  }
+
+  type K8sRouter struct {
+      Namespace       string `json:"namespace"`
+      BaseDomain      string `json:"base_domain"`
+      DefaultPort     int    `json:"default_port,omitempty"`
+      CaddyAdminURL   string `json:"caddy_admin_url,omitempty"`
+      CaddyServerName string `json:"caddy_server_name,omitempty"`
+
+      adminClient  *router.AdminAPIClient
+      tracker      *router.RouteIDTracker
+      watcher      *k8s.Watcher
+      ctx          context.Context
+      cancel       context.CancelFunc
+  }
+
+  func (K8sRouter) CaddyModule() caddy.ModuleInfo {
+      return caddy.ModuleInfo{
+          ID:  "http.handlers.k8s_router",
+          New: func() caddy.Module { return new(K8sRouter) },
+      }
+  }
+  ```
+- 实现 Provision 接口：验证配置、初始化 K8s client
+- 实现 Validate 接口：验证配置有效性
+**依赖**：T013、T016、T017
+**验收**：Caddy 模块注册成功，配置加载正确
+
+---
+
+### T023 实现 EventHandler 连接 Watcher 和 AdminAPIClient
+**文件**：`handler.go`
 **操作**：
 - 实现 EventHandler 接口：
   ```go
-  type K8sEventHandler struct {
+  type EventHandler struct {
       adminClient  *router.AdminAPIClient
       tracker      *router.RouteIDTracker
       k8sClient    kubernetes.Interface
@@ -441,70 +478,66 @@
   }
   ```
 - 实现所有事件处理方法：
-  - OnDeploymentAdd：生成 Route ID → 调用 Admin API 创建路由 → 记录到 Tracker → 写回注解
-  - OnDeploymentUpdate：检查副本数变化 → 如果为 0 则删除路由
+  - OnDeploymentAdd：检查 replicas==1 → 生成 Route ID → 调用 Admin API 创建路由 → 记录到 Tracker → 写回注解
+  - OnDeploymentUpdate：检查副本数变化 → 如果不为 1 则删除路由
   - OnDeploymentDelete：查询 Tracker 获取 Route ID → 调用 Admin API 删除路由 → 清理 Tracker
-  - OnPodUpdate：检测 IP 变化 → 删除旧路由 + 创建新路由
+  - OnPodUpdate：检测 Pod 删除/新建 → 删除旧路由 + 创建新路由（Pod IP 变化）
 **依赖**：T020、T021、T017、T016、T015
 **验收**：事件正确触发路由操作
 
 ---
 
-### T023 实现主入口和初始化
-**文件**：`main.go`
+### T024 实现 Caddy App 生命周期
+**文件**：`module.go`（扩展）
 **操作**：
-- 创建主程序结构体：
+- 实现 caddy.App 接口：
   ```go
-  type K8sWatcherApp struct {
-      Config       *config.Config
-      AdminClient  *router.AdminAPIClient
-      Tracker      *router.RouteIDTracker
-      Watcher      *k8s.Watcher
-      ctx          context.Context
-      cancel       context.CancelFunc
-  }
-  ```
-- 实现 main() 函数：
-  1. 加载配置
-  2. 初始化 Kubernetes client
-  3. 创建 AdminAPIClient
-  4. 创建 RouteIDTracker
-  5. 创建 Watcher 和 EventHandler
-  6. 启动 Watcher（在 goroutine 中）
-  7. 等待信号（优雅关闭）
-**依赖**：T022
-**验收**：程序启动成功，扩展已加载
+  func (kr *K8sRouter) Start() error {
+      kr.ctx, kr.cancel = context.WithCancel(context.Background())
 
----
+      // 1. 创建 AdminAPIClient
+      kr.adminClient = router.NewAdminAPIClient(kr.CaddyAdminURL, kr.CaddyServerName)
 
-### T024 实现启动时 Tracker 恢复逻辑
-**文件**：`main.go`（启动恢复部分）
-**操作**：
-- 在启动时查询 Caddy Admin API 获取所有 k8s-* 路由：
-  ```go
-  func (app *K8sWatcherApp) RecoverTracker(ctx context.Context) error {
-      routeIDs, err := app.AdminClient.ListRoutes(ctx)
-      if err != nil {
+      // 2. 创建 RouteIDTracker
+      kr.tracker = router.NewRouteIDTracker()
+
+      // 3. 恢复 Tracker（从 Caddy 查询现有路由）
+      if err := kr.recoverTracker(); err != nil {
           return err
       }
 
-      // 解析 Route ID 恢复 Deployment Key
-      for _, routeID := range routeIDs {
-          if strings.HasPrefix(routeID, "k8s-") {
-              deploymentKey := parseDeploymentKeyFromRouteID(routeID)
-              app.Tracker.Set(deploymentKey, routeID)
-          }
+      // 4. 创建 EventHandler
+      eventHandler := &EventHandler{
+          adminClient: kr.adminClient,
+          tracker:     kr.tracker,
+          // ...
+      }
+
+      // 5. 创建并启动 Watcher
+      kr.watcher = k8s.NewWatcher(clientset, kr.Namespace, eventHandler)
+      go kr.watcher.Start(kr.ctx)
+
+      return nil
+  }
+
+  func (kr *K8sRouter) Stop() error {
+      if kr.cancel != nil {
+          kr.cancel()
+      }
+      if kr.watcher != nil {
+          kr.watcher.Stop()
       }
       return nil
   }
   ```
-**依赖**：T023、T017
-**验收**：重启后 Tracker 状态正确恢复
+- 实现 recoverTracker 方法：查询 Caddy Admin API 获取现有路由
+**依赖**：T022、T023
+**验收**：Caddy 启动成功，模块正常运行
 
 ---
 
 ### T025 实现注解写回逻辑
-**文件**：已在 T022 的 EventHandler 中实现
+**文件**：已在 T023 的 EventHandler 中实现
 **操作**：
 - 在路由创建成功后，调用 PatchDeploymentAnnotation：
   ```go
@@ -515,7 +548,7 @@
   }
   k8s.PatchDeploymentAnnotation(client, namespace, name, annotations)
   ```
-**依赖**：T015、T022
+**依赖**：T015、T023
 **验收**：Deployment 注解已正确写回
 
 ---
