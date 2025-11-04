@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -50,4 +51,13 @@ func GetPortFromAnnotation(annotations map[string]string, defaultPort int) (int,
 	}
 
 	return port, nil
+}
+
+// DesiredReplicaCount 返回 Deployment 期望的副本数量。
+// 按 Kubernetes 语义，当 spec.replicas 为空时默认值为 1。
+func DesiredReplicaCount(deployment *appsv1.Deployment) int32 {
+	if deployment == nil || deployment.Spec.Replicas == nil {
+		return 1
+	}
+	return *deployment.Spec.Replicas
 }

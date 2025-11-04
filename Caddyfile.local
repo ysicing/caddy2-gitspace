@@ -1,0 +1,20 @@
+{
+	admin localhost:2019
+	persist_config off
+
+	# 禁用自动 HTTPS
+	auto_https off
+}
+
+# HTTP 服务（本地测试）
+:80 {
+	k8s_router {
+		namespace {$K8S_NAMESPACE:default}
+		base_domain {$BASE_DOMAIN:localhost}
+		default_port {$DEFAULT_PORT:8089}
+	}
+
+	handle /healthz {
+		respond "OK" 200
+	}
+}

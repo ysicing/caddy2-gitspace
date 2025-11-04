@@ -144,7 +144,7 @@ func (w *Watcher) handleDeploymentAdd(obj any) {
 	}
 
 	// 只处理单副本 Deployment
-	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
+	if DesiredReplicaCount(deployment) != 1 {
 		return
 	}
 

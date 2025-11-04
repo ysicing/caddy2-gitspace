@@ -51,15 +51,11 @@ func NewEventHandler(
 // OnDeploymentAdd 处理 Deployment 创建事件
 func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
 	// 只处理单副本 Deployment
-	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
-		replicaValue := any("nil")
-		if deployment.Spec.Replicas != nil {
-			replicaValue = *deployment.Spec.Replicas
-		}
-
+	replicas := k8s.DesiredReplicaCount(deployment)
+	if replicas != 1 {
 		h.logger.Debug("Skipping non-single-replica deployment",
 			zap.String("deployment", deployment.Name),
-			zap.Any("replicas", replicaValue),
+			zap.Int32("replicas", replicas),
 		)
 		return nil
 	}
@@ -95,15 +91,8 @@ func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
 
 // OnDeploymentUpdate 处理 Deployment 更新事件
 func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.Deployment) error {
-	oldReplicas := int32(0)
-	if oldDeployment.Spec.Replicas != nil {
-		oldReplicas = *oldDeployment.Spec.Replicas
-	}
-
-	newReplicas := int32(0)
-	if newDeployment.Spec.Replicas != nil {
-		newReplicas = *newDeployment.Spec.Replicas
-	}
+	oldReplicas := k8s.DesiredReplicaCount(oldDeployment)
+	newReplicas := k8s.DesiredReplicaCount(newDeployment)
 
 	oldReady := isDeploymentReady(oldDeployment)
 	newReady := isDeploymentReady(newDeployment)

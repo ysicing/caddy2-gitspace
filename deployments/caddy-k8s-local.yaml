@@ -1,0 +1,140 @@
+---
+# ConfigMap: Caddyfile 配置（本地测试 - HTTP only）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config-local
+  namespace: default
+data:
+  Caddyfile: |
+    {
+      admin localhost:2019
+      persist_config off
+      auto_https off
+      log {
+        output stdout
+        format json
+        level DEBUG
+      }
+    }
+
+    :80 {
+      k8s_router {
+        namespace {$K8S_NAMESPACE}
+        base_domain {$BASE_DOMAIN}
+        default_port {$DEFAULT_PORT}
+      }
+
+      handle /healthz {
+        respond "OK" 200
+      }
+
+      log {
+        output stdout
+        format json
+      }
+    }
+
+---
+# Deployment: Caddy K8s Router (本地测试版)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy-k8s-local
+  namespace: default
+  labels:
+    app: caddy-k8s-local
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caddy-k8s-local
+  template:
+    metadata:
+      labels:
+        app: caddy-k8s-local
+    spec:
+      serviceAccountName: caddy-k8s
+      containers:
+        - name: caddy
+          # 使用本地构建的镜像
+          image: caddy-k8s:local
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: admin
+              containerPort: 2019
+              protocol: TCP
+
+          env:
+            # K8s 命名空间
+            - name: K8S_NAMESPACE
+              value: "default"
+
+            # 基础域名（本地测试使用 localhost 或 .local）
+            - name: BASE_DOMAIN
+              value: "localhost"
+
+            # 默认端口
+            - name: DEFAULT_PORT
+              value: "8089"
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/caddy
+              readOnly: true
+
+          # 健康检查（HTTP）
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+      volumes:
+        - name: config
+          configMap:
+            name: caddy-config-local
+
+---
+# Service: NodePort（本地测试）
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy-k8s-local
+  namespace: default
+  labels:
+    app: caddy-k8s-local
+spec:
+  type: NodePort
+  selector:
+    app: caddy-k8s-local
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+      nodePort: 30080  # 固定 NodePort 方便访问

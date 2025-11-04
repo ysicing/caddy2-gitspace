@@ -10,57 +10,49 @@
 - ✅ Pod IP 变化时自动更新路由
 - ✅ Deployment 删除或缩容至 0 时自动移除路由
 - ✅ 将生成的域名信息写回 Deployment 注解
+- ✅ 支持 HTTPS 自动证书（阿里云 DNS 验证）
+- ✅ 支持阿里云 ACK 和 SLB 集成
 
 ## 快速开始
 
-### 1. 编译包含插件的 Caddy
+### 本地测试（HTTP）
 
 ```bash
-# 安装 xcaddy
-go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+# 1. 构建镜像
+docker build -t caddy-k8s:local .
 
-# 编译
-xcaddy build --with github.com/ysicing/caddy2-k8s=.
-
-# 验证插件已加载
-./caddy list-modules | grep k8s
-```
-
-### 2. 配置 Caddyfile
-
-```caddyfile
-{
-    admin localhost:2019
-    persist_config off
-}
-
-:80 {
-    k8s_router {
-        namespace default
-        base_domain example.com
-        default_port 8089
-    }
-}
-```
-
-### 3. 部署到 Kubernetes
-
-```bash
-# 构建 Docker 镜像
-docker build -t your-registry/caddy-k8s:latest .
-docker push your-registry/caddy-k8s:latest
-
-# 部署到 Kubernetes
-kubectl apply -f deployments/caddy-k8s.yaml
-
-# 部署测试应用
+# 2. 部署到本地 Kubernetes（minikube/kind/Docker Desktop）
+kubectl apply -f deployments/caddy-k8s-local.yaml
 kubectl apply -f deployments/example-deployments.yaml
 
-# 验证路由
-kubectl get deployment vscode -o jsonpath='{.metadata.annotations.gitspace\.caddy\.route\.url}'
+# 3. 访问测试
+curl -H "Host: vscode.localhost" http://localhost:30080/
 ```
 
-完整的部署指南请参考 [DEPLOY.md](deployments/DEPLOY.md)。
+详细说明请参考 [LOCAL-DEPLOY.md](deployments/LOCAL-DEPLOY.md)。
+
+### 生产环境（HTTPS + 阿里云 ACK）
+
+```bash
+# 1. 创建阿里云 DNS API Secret
+kubectl create secret generic alicloud-dns-secret \
+  --from-literal=access-key-id=YOUR_KEY \
+  --from-literal=access-key-secret=YOUR_SECRET
+
+# 2. 构建推送镜像到 ACR
+docker build -t registry.cn-hangzhou.aliyuncs.com/your-ns/caddy-k8s:latest .
+docker push registry.cn-hangzhou.aliyuncs.com/your-ns/caddy-k8s:latest
+
+# 3. 修改配置并部署
+kubectl apply -f deployments/caddy-k8s.yaml
+
+# 4. 配置 DNS 通配符解析
+# *.your-domain.com → SLB IP
+```
+
+详细说明请参考：
+- 阿里云 ACK：[ACK-DEPLOY.md](deployments/ACK-DEPLOY.md)
+- 通用部署：[DEPLOY.md](deployments/DEPLOY.md)
 
 ## 配置说明
 
