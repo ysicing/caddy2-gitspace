@@ -59,6 +59,14 @@ func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
 		return nil
 	}
 
+	// 检查 Deployment 是否就绪
+	if !isDeploymentReady(deployment) {
+		h.logger.Debug("Deployment not ready yet, skipping",
+			zap.String("deployment", deployment.Name),
+		)
+		return nil
+	}
+
 	// 查找就绪的 Pod
 	pod, err := h.findReadyPod(deployment)
 	if err != nil {
@@ -70,8 +78,7 @@ func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
 	}
 
 	if pod == nil {
-		// 没有就绪的 Pod，等待 Pod 就绪事件
-		h.logger.Debug("No ready pod found, waiting",
+		h.logger.Debug("No ready pod found",
 			zap.String("deployment", deployment.Name),
 		)
 		return nil
@@ -93,22 +100,88 @@ func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.D
 		newReplicas = *newDeployment.Spec.Replicas
 	}
 
-	// 如果副本数从 1 变为 0 或其他值，删除路由
+	oldReady := isDeploymentReady(oldDeployment)
+	newReady := isDeploymentReady(newDeployment)
+
+	// 场景 1: 副本数从 1 变为其他值 → 删除路由
 	if oldReplicas == 1 && newReplicas != 1 {
 		h.logger.Info("Deployment replicas changed from 1, deleting route",
 			zap.String("deployment", newDeployment.Name),
-			zap.Int32("old_replicas", oldReplicas),
 			zap.Int32("new_replicas", newReplicas),
 		)
 		return h.deleteRoute(newDeployment)
 	}
 
-	// 如果副本数从其他值变为 1，创建路由
+	// 场景 2: 副本数从其他值变为 1 → 尝试创建路由
 	if oldReplicas != 1 && newReplicas == 1 {
-		h.logger.Info("Deployment replicas changed to 1, creating route",
+		h.logger.Info("Deployment replicas changed to 1",
 			zap.String("deployment", newDeployment.Name),
 		)
 		return h.OnDeploymentAdd(newDeployment)
+	}
+
+	// 场景 3: 副本数保持为 1，但就绪状态变化
+	if newReplicas == 1 {
+		// 从未就绪变为就绪 → 创建路由
+		if !oldReady && newReady {
+			h.logger.Info("Deployment became ready, creating route",
+				zap.String("deployment", newDeployment.Name),
+			)
+			return h.OnDeploymentAdd(newDeployment)
+		}
+
+		// 从就绪变为未就绪 → 删除路由
+		if oldReady && !newReady {
+			h.logger.Info("Deployment became not ready, deleting route",
+				zap.String("deployment", newDeployment.Name),
+			)
+			return h.deleteRoute(newDeployment)
+		}
+
+		// 保持就绪状态 → 可能是 Pod 重建（IP 变化）
+		// 重新查询 Pod IP 并更新路由
+		if oldReady && newReady {
+			// 检查是否有就绪的 Pod
+			pod, err := h.findReadyPod(newDeployment)
+			if err != nil {
+				return err
+			}
+
+			if pod != nil {
+				// 获取当前路由的 Pod IP
+				deploymentKey := fmt.Sprintf("%s/%s", newDeployment.Namespace, newDeployment.Name)
+				routeID, exists := h.tracker.Get(deploymentKey)
+
+				if exists {
+					// 查询当前路由配置
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+
+					currentRoute, err := h.adminClient.GetRoute(ctx, routeID)
+					if err == nil && currentRoute != nil {
+						expectedAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, getPortFromDeployment(newDeployment, h.defaultPort))
+
+						// 如果 Pod IP 变化了，更新路由
+						if currentRoute.TargetAddr != expectedAddr {
+							h.logger.Info("Pod IP changed, updating route",
+								zap.String("deployment", newDeployment.Name),
+								zap.String("old_target", currentRoute.TargetAddr),
+								zap.String("new_target", expectedAddr),
+							)
+							// 删除旧路由
+							if err := h.deleteRoute(newDeployment); err != nil {
+								h.logger.Error("Failed to delete old route", zap.Error(err))
+							}
+							// 创建新路由
+							return h.createRoute(newDeployment, pod)
+						}
+					}
+				} else {
+					// 没有路由，创建新路由
+					return h.createRoute(newDeployment, pod)
+				}
+			}
+		}
 	}
 
 	return nil
@@ -117,78 +190,6 @@ func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.D
 // OnDeploymentDelete 处理 Deployment 删除事件
 func (h *EventHandler) OnDeploymentDelete(deployment *appsv1.Deployment) error {
 	return h.deleteRoute(deployment)
-}
-
-// OnPodUpdate 处理 Pod 更新事件
-func (h *EventHandler) OnPodUpdate(oldPod, newPod *corev1.Pod) error {
-	// 场景 1: Pod 删除（oldPod != nil, newPod == nil）
-	if oldPod != nil && newPod == nil {
-		h.logger.Info("Pod deleted, deleting route",
-			zap.String("pod", oldPod.Name),
-		)
-		deployment, err := h.getDeploymentFromPod(oldPod)
-		if err != nil || deployment == nil {
-			return err
-		}
-		return h.deleteRoute(deployment)
-	}
-
-	// 场景 2: 新 Pod 创建并就绪（oldPod == nil, newPod != nil）
-	if oldPod == nil && newPod != nil {
-		h.logger.Info("New pod became ready, creating route",
-			zap.String("pod", newPod.Name),
-			zap.String("pod_ip", newPod.Status.PodIP),
-		)
-		deployment, err := h.getDeploymentFromPod(newPod)
-		if err != nil || deployment == nil {
-			return err
-		}
-
-		// 只处理单副本 Deployment
-		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
-			return nil
-		}
-
-		return h.createRoute(deployment, newPod)
-	}
-
-	// 场景 3: Pod 状态更新（oldPod != nil, newPod != nil）
-	if oldPod != nil && newPod != nil {
-		deployment, err := h.getDeploymentFromPod(newPod)
-		if err != nil || deployment == nil {
-			return err
-		}
-
-		// 只处理单副本 Deployment
-		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
-			return nil
-		}
-
-		// 检查就绪状态变化
-		oldReady := k8s.IsPodReady(oldPod)
-		newReady := k8s.IsPodReady(newPod)
-
-		if !oldReady && newReady {
-			// Pod 从未就绪变为就绪，创建路由
-			h.logger.Info("Pod became ready, creating route",
-				zap.String("deployment", deployment.Name),
-				zap.String("pod", newPod.Name),
-				zap.String("pod_ip", newPod.Status.PodIP),
-			)
-			return h.createRoute(deployment, newPod)
-		}
-
-		if oldReady && !newReady {
-			// Pod 从就绪变为未就绪，删除路由
-			h.logger.Info("Pod became not ready, deleting route",
-				zap.String("deployment", deployment.Name),
-				zap.String("pod", newPod.Name),
-			)
-			return h.deleteRoute(deployment)
-		}
-	}
-
-	return nil
 }
 
 // createRoute 创建路由
@@ -315,37 +316,24 @@ func (h *EventHandler) findReadyPod(deployment *appsv1.Deployment) (*corev1.Pod,
 	return nil, nil
 }
 
-// getDeploymentFromPod 从 Pod 获取所属的 Deployment
-func (h *EventHandler) getDeploymentFromPod(pod *corev1.Pod) (*appsv1.Deployment, error) {
-	// 从 OwnerReferences 查找 Deployment
-	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "ReplicaSet" {
-			// 查找 ReplicaSet
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			rs, err := h.k8sClient.AppsV1().ReplicaSets(pod.Namespace).Get(ctx, owner.Name, metav1.GetOptions{})
-			if err != nil {
-				return nil, err
-			}
-
-			// 从 ReplicaSet 查找 Deployment
-			for _, rsOwner := range rs.OwnerReferences {
-				if rsOwner.Kind == "Deployment" {
-					ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel2()
-
-					deployment, err := h.k8sClient.AppsV1().Deployments(pod.Namespace).Get(ctx2, rsOwner.Name, metav1.GetOptions{})
-					if err != nil {
-						return nil, err
-					}
-					return deployment, nil
-				}
-			}
+// isDeploymentReady 检查 Deployment 是否就绪
+func isDeploymentReady(deployment *appsv1.Deployment) bool {
+	// 检查 Deployment 的状态条件
+	for _, cond := range deployment.Status.Conditions {
+		if cond.Type == appsv1.DeploymentAvailable {
+			return cond.Status == corev1.ConditionTrue
 		}
 	}
+	return false
+}
 
-	return nil, nil
+// getPortFromDeployment 从 Deployment 获取端口
+func getPortFromDeployment(deployment *appsv1.Deployment, defaultPort int) int {
+	port, err := k8s.GetPortFromAnnotation(deployment.Annotations, defaultPort)
+	if err != nil {
+		return defaultPort
+	}
+	return port
 }
 
 // Interface guard

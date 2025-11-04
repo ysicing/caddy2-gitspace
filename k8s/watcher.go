@@ -7,7 +7,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -23,9 +22,6 @@ type EventHandler interface {
 
 	// OnDeploymentDelete 处理 Deployment 删除事件
 	OnDeploymentDelete(deployment *appsv1.Deployment) error
-
-	// OnPodUpdate 处理 Pod 更新事件（主要关注就绪状态变化）
-	OnPodUpdate(oldPod, newPod *corev1.Pod) error
 }
 
 // Watcher 监听 Kubernetes 资源变化
@@ -131,12 +127,10 @@ func (w *Watcher) registerDeploymentHandlers(informer cache.SharedIndexInformer)
 }
 
 // registerPodHandlers 注册 Pod 事件处理器
+// 注意：不再监听 Pod 事件，只通过 Deployment 状态查询 Pod
 func (w *Watcher) registerPodHandlers(informer cache.SharedIndexInformer) {
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    w.handlePodAdd,
-		UpdateFunc: w.handlePodUpdate,
-		DeleteFunc: w.handlePodDelete,
-	})
+	// 不注册 Pod 事件处理器
+	// Pod 的状态变化会反映在 Deployment 的 Ready 状态中
 }
 
 // handleDeploymentAdd 处理 Deployment 创建事件
@@ -151,8 +145,8 @@ func (w *Watcher) handleDeploymentAdd(obj any) {
 		return
 	}
 
-	// 检查是否有就绪的 Pod
-	// 如果没有就绪的 Pod，等待 Pod 就绪事件
+	// 调用 EventHandler 处理
+	// EventHandler 会检查 Deployment 是否就绪，并查询 Pod IP
 	if err := w.eventHandler.OnDeploymentAdd(deployment); err != nil {
 		// 错误已由 EventHandler 记录
 		return
@@ -167,22 +161,10 @@ func (w *Watcher) handleDeploymentUpdate(oldObj, newObj any) {
 		return
 	}
 
-	// 检查副本数变化
-	oldReplicas := int32(0)
-	if oldDeployment.Spec.Replicas != nil {
-		oldReplicas = *oldDeployment.Spec.Replicas
-	}
-
-	newReplicas := int32(0)
-	if newDeployment.Spec.Replicas != nil {
-		newReplicas = *newDeployment.Spec.Replicas
-	}
-
-	// 如果副本数从 1 变为其他值，调用更新处理器
-	if oldReplicas != newReplicas {
-		if err := w.eventHandler.OnDeploymentUpdate(oldDeployment, newDeployment); err != nil {
-			return
-		}
+	// 调用 EventHandler 处理所有更新
+	// EventHandler 会根据副本数、就绪状态等决定是创建、更新还是删除路由
+	if err := w.eventHandler.OnDeploymentUpdate(oldDeployment, newDeployment); err != nil {
+		return
 	}
 }
 
@@ -202,66 +184,6 @@ func (w *Watcher) handleDeploymentDelete(obj any) {
 	}
 
 	if err := w.eventHandler.OnDeploymentDelete(deployment); err != nil {
-		return
-	}
-}
-
-// handlePodAdd 处理 Pod 创建事件（新 Pod 启动）
-func (w *Watcher) handlePodAdd(obj any) {
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		return
-	}
-
-	// 只处理就绪的 Pod
-	if !IsPodReady(pod) {
-		return
-	}
-
-	// Pod 就绪后，创建路由
-	if err := w.eventHandler.OnPodUpdate(nil, pod); err != nil {
-		return
-	}
-}
-
-// handlePodUpdate 处理 Pod 更新事件
-func (w *Watcher) handlePodUpdate(oldObj, newObj any) {
-	oldPod, ok1 := oldObj.(*corev1.Pod)
-	newPod, ok2 := newObj.(*corev1.Pod)
-	if !ok1 || !ok2 {
-		return
-	}
-
-	// 检查就绪状态是否变化
-	oldReady := IsPodReady(oldPod)
-	newReady := IsPodReady(newPod)
-
-	// 只在就绪状态变化时触发事件
-	if oldReady != newReady {
-		if err := w.eventHandler.OnPodUpdate(oldPod, newPod); err != nil {
-			return
-		}
-	}
-}
-
-// handlePodDelete 处理 Pod 删除事件
-func (w *Watcher) handlePodDelete(obj any) {
-	pod, ok := obj.(*corev1.Pod)
-	if !ok {
-		// 处理 DeletedFinalStateUnknown 情况
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			return
-		}
-		pod, ok = tombstone.Obj.(*corev1.Pod)
-		if !ok {
-			return
-		}
-	}
-
-	// Pod 删除时，删除对应的路由
-	// 传递 nil 作为 newPod 表示 Pod 已删除
-	if err := w.eventHandler.OnPodUpdate(pod, nil); err != nil {
 		return
 	}
 }
