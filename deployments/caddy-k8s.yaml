@@ -1,0 +1,179 @@
+---
+# ServiceAccount for Caddy K8s Router
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: caddy-k8s
+  namespace: default
+
+---
+# ClusterRole: 定义 Caddy 需要的权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: caddy-k8s-reader
+rules:
+  # 读取 Deployments
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+
+  # 读取 Pods（用于查询 Pod IP）
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding: 绑定权限到 ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: caddy-k8s-reader-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: caddy-k8s-reader
+subjects:
+  - kind: ServiceAccount
+    name: caddy-k8s
+    namespace: default
+
+---
+# ConfigMap: Caddyfile 配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caddy-config
+  namespace: default
+data:
+  Caddyfile: |
+    {
+      admin localhost:2019
+      persist_config off
+      log {
+        output stdout
+        format json
+        level INFO
+      }
+    }
+
+    :80 {
+      k8s_router {
+        namespace {$K8S_NAMESPACE}
+        base_domain {$BASE_DOMAIN}
+        default_port {$DEFAULT_PORT}
+      }
+
+      handle /healthz {
+        respond "OK" 200
+      }
+
+      log {
+        output stdout
+        format json
+      }
+    }
+
+---
+# Deployment: Caddy K8s Router
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy-k8s
+  namespace: default
+  labels:
+    app: caddy-k8s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: caddy-k8s
+  template:
+    metadata:
+      labels:
+        app: caddy-k8s
+    spec:
+      serviceAccountName: caddy-k8s
+      containers:
+        - name: caddy
+          # 使用包含 k8s_router 插件的 Caddy 镜像
+          image: your-registry/caddy-k8s:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: admin
+              containerPort: 2019
+              protocol: TCP
+
+          env:
+            # K8s 命名空间（监听的命名空间）
+            - name: K8S_NAMESPACE
+              value: "default"
+
+            # 基础域名
+            - name: BASE_DOMAIN
+              value: "example.com"
+
+            # 默认端口
+            - name: DEFAULT_PORT
+              value: "8089"
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/caddy
+              readOnly: true
+
+          # 健康检查
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+      volumes:
+        - name: config
+          configMap:
+            name: caddy-config
+
+---
+# Service: 暴露 Caddy HTTP 端口
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy-k8s
+  namespace: default
+  labels:
+    app: caddy-k8s
+spec:
+  type: LoadBalancer  # 或者使用 NodePort / ClusterIP
+  selector:
+    app: caddy-k8s
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+      # nodePort: 30080  # 如果使用 NodePort

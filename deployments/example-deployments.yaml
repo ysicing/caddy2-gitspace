@@ -1,0 +1,80 @@
+---
+# 示例 1：VSCode Deployment（使用自定义端口）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vscode
+  namespace: default
+  annotations:
+    # 指定端口（Caddy 会将流量转发到 Pod 的 8080 端口）
+    gitspace.caddy.default.port: "8080"
+spec:
+  replicas: 1  # 必须是 1（插件仅支持单副本）
+  selector:
+    matchLabels:
+      app: vscode
+  template:
+    metadata:
+      labels:
+        app: vscode
+    spec:
+      containers:
+        - name: vscode
+          image: codercom/code-server:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PASSWORD
+              value: "your-password"
+
+---
+# 示例 2：Jupyter Deployment（使用默认端口 8089）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jupyter
+  namespace: default
+  # 没有指定端口注解，将使用默认端口 8089
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jupyter
+  template:
+    metadata:
+      labels:
+        app: jupyter
+    spec:
+      containers:
+        - name: jupyter
+          image: jupyter/scipy-notebook:latest
+          ports:
+            - containerPort: 8089
+          env:
+            - name: JUPYTER_ENABLE_LAB
+              value: "yes"
+
+---
+# 示例 3：Web 应用 Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: default
+  annotations:
+    gitspace.caddy.default.port: "3000"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: app
+          image: your-app:latest
+          ports:
+            - containerPort: 3000

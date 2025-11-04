@@ -45,7 +45,22 @@ xcaddy build --with github.com/ysicing/caddy2-k8s=.
 
 ### 3. 部署到 Kubernetes
 
-参考 [quickstart.md](.claude/specs/001-caddy-v2-watch/quickstart.md) 获取完整的部署步骤。
+```bash
+# 构建 Docker 镜像
+docker build -t your-registry/caddy-k8s:latest .
+docker push your-registry/caddy-k8s:latest
+
+# 部署到 Kubernetes
+kubectl apply -f deployments/caddy-k8s.yaml
+
+# 部署测试应用
+kubectl apply -f deployments/example-deployments.yaml
+
+# 验证路由
+kubectl get deployment vscode -o jsonpath='{.metadata.annotations.gitspace\.caddy\.route\.url}'
+```
+
+完整的部署指南请参考 [DEPLOY.md](deployments/DEPLOY.md)。
 
 ## 配置说明
 
@@ -83,6 +98,61 @@ spec:
 - `gitspace.caddy.route.url`: 生成的域名（如 `vscode.example.com`）
 - `gitspace.caddy.route.synced-at`: 路由同步时间戳
 - `gitspace.caddy.route.id`: 路由 ID
+
+## 使用示例
+
+### 创建一个 GitSpace Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vscode
+  namespace: default
+  annotations:
+    # 指定应用监听的端口
+    gitspace.caddy.default.port: "8080"
+spec:
+  replicas: 1  # 必须是 1
+  selector:
+    matchLabels:
+      app: vscode
+  template:
+    metadata:
+      labels:
+        app: vscode
+    spec:
+      containers:
+        - name: vscode
+          image: codercom/code-server:latest
+          ports:
+            - containerPort: 8080
+```
+
+部署后，Caddy 会自动：
+1. 创建路由：`vscode.example.com` → `<pod-ip>:8080`
+2. 写回注解到 Deployment：
+   ```yaml
+   annotations:
+     gitspace.caddy.route.url: "vscode.example.com"
+     gitspace.caddy.route.synced-at: "2025-01-08T10:30:00Z"
+     gitspace.caddy.route.id: "k8s-default-vscode"
+   ```
+
+### 访问应用
+
+```bash
+# 获取 Caddy Service IP
+CADDY_IP=$(kubectl get svc caddy-k8s -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# 配置 DNS 或 /etc/hosts
+echo "$CADDY_IP vscode.example.com" | sudo tee -a /etc/hosts
+
+# 访问应用
+curl http://vscode.example.com/
+```
+
+更多示例请参考 [example-deployments.yaml](deployments/example-deployments.yaml)。
 
 ## 限制和约束
 

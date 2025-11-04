@@ -1,0 +1,45 @@
+# Caddy v2 K8s 动态路由 - Kubernetes 部署配置
+
+{
+	# Admin API 仅监听 localhost（Kubernetes Pod 内部使用）
+	admin localhost:2019
+
+	# 关闭配置持久化（由 k8s_router 插件动态管理）
+	persist_config off
+
+	# 日志配置
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+}
+
+# HTTP 服务
+:80 {
+	# K8s 路由插件配置
+	k8s_router {
+		# 监听的命名空间（从环境变量读取，默认为 default）
+		namespace {$K8S_NAMESPACE:default}
+
+		# 基础域名（从环境变量读取）
+		base_domain {$BASE_DOMAIN:example.com}
+
+		# 默认端口
+		default_port {$DEFAULT_PORT:8089}
+
+		# Kubernetes 配置（Pod 内使用 in-cluster 配置）
+		# kubeconfig 会自动检测
+	}
+
+	# 健康检查端点（用于 Kubernetes 探针）
+	handle /healthz {
+		respond "OK" 200
+	}
+
+	# 可选：添加基本的日志记录
+	log {
+		output stdout
+		format json
+	}
+}
