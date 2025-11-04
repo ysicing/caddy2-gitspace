@@ -4,17 +4,22 @@
 
 	# 禁用自动 HTTPS
 	auto_https off
-}
 
-# HTTP 服务（本地测试）
-:80 {
+	# K8s Router 全局配置
 	k8s_router {
 		namespace {$K8S_NAMESPACE:default}
 		base_domain {$BASE_DOMAIN:localhost}
 		default_port {$DEFAULT_PORT:8089}
 	}
+}
 
+# HTTP 服务 - 通配符域名匹配所有子域名
+# k8s_router 会动态注入匹配具体域名的路由（优先级更高）
+*.{$BASE_DOMAIN:localhost} {
 	handle /healthz {
 		respond "OK" 200
 	}
+
+	# 默认响应（当没有匹配的动态路由时）
+	respond "Caddy K8s Router - No matching deployment" 404
 }

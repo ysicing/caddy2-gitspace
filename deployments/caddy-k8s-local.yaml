@@ -53,18 +53,21 @@ data:
         format json
         level DEBUG
       }
-    }
 
-    *.{$BASE_DOMAIN} {
       k8s_router {
         namespace {$K8S_NAMESPACE}
         base_domain {$BASE_DOMAIN}
         default_port {$DEFAULT_PORT}
       }
+    }
 
+    *.{$BASE_DOMAIN} {
       handle /healthz {
         respond "OK" 200
       }
+
+      # 默认响应（当没有匹配的动态路由时）
+      respond "Caddy K8s Router - No matching deployment" 404
 
       log {
         output stdout

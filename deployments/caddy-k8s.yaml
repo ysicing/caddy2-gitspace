@@ -63,6 +63,20 @@ metadata:
   namespace: default
 data:
   Caddyfile: |
+    # ============================================================================
+    # 生产环境 HTTPS 配置
+    # ============================================================================
+    #
+    # 方案 1：使用 DNS-01 challenge（推荐用于通配符证书）
+    # 需要编译 DNS 提供商插件，例如：
+    # xcaddy build --with github.com/ysicing/caddy2-gitspace=. \
+    #              --with github.com/caddy-dns/alidns
+    #
+    # 方案 2：使用 HTTP-01 challenge（适用于单个域名）
+    # k8s_router 会为每个 Deployment 动态注入路由，Caddy 会自动为每个域名申请证书
+    # 不需要额外的 DNS 插件，但不支持通配符证书
+    # ============================================================================
+
     {
       admin localhost:2019
       persist_config off
@@ -71,23 +85,73 @@ data:
         format json
         level INFO
       }
-    }
 
-    :80 {
+      # 邮箱用于 ACME 证书申请
+      email {$ACME_EMAIL:admin@example.com}
+
+      # K8s Router 全局配置
       k8s_router {
         namespace {$K8S_NAMESPACE}
         base_domain {$BASE_DOMAIN}
         default_port {$DEFAULT_PORT}
       }
+    }
 
+    # ============================================================================
+    # 方案 1：通配符域名 + DNS-01 challenge（需要 DNS 插件）
+    # ============================================================================
+    # 取消下面的注释以启用（同时注释掉方案 2）
+    #
+    # *.{$BASE_DOMAIN} {
+    #   # TLS 配置 - 使用 DNS-01 challenge（阿里云 DNS）
+    #   tls {
+    #     dns alidns {
+    #       access_key_id {$ALICLOUD_ACCESS_KEY}
+    #       access_key_secret {$ALICLOUD_SECRET_KEY}
+    #     }
+    #   }
+    #
+    #   handle /healthz {
+    #     respond "OK" 200
+    #   }
+    #
+    #   # 默认响应（当没有匹配的动态路由时）
+    #   respond "Caddy K8s Router - No matching deployment" 404
+    #
+    #   log {
+    #     output stdout
+    #     format json
+    #   }
+    # }
+    #
+    # # HTTP 到 HTTPS 重定向
+    # http://*.{$BASE_DOMAIN} {
+    #   redir https://{host}{uri} permanent
+    # }
+
+    # ============================================================================
+    # 方案 2：动态域名 + HTTP-01 challenge（默认，无需额外插件）
+    # ============================================================================
+    # k8s_router 注入的路由会自动启用 HTTPS（使用 HTTP-01 challenge）
+    # 这里只需要定义通配符站点作为兜底
+
+    *.{$BASE_DOMAIN} {
       handle /healthz {
         respond "OK" 200
       }
+
+      # 默认响应（当没有匹配的动态路由时）
+      respond "Caddy K8s Router - No matching deployment" 404
 
       log {
         output stdout
         format json
       }
+    }
+
+    # HTTP 到 HTTPS 重定向（Caddy 会自动处理）
+    http://*.{$BASE_DOMAIN} {
+      redir https://{host}{uri} permanent
     }
 
 ---
