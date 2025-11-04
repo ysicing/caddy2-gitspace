@@ -10,7 +10,7 @@ RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 COPY . .
 
 # 使用 xcaddy 编译 Caddy（包含本地模块）
-RUN xcaddy build --with github.com/ysicing/caddy2-k8s=.
+RUN xcaddy build --with github.com/ysicing/caddy2-gitspace=.
 
 # 第二阶段：运行时镜像
 FROM alpine:latest

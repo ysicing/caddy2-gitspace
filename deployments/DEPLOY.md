@@ -6,7 +6,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/ysicing/caddy2-k8s.git
+git clone https://github.com/ysicing/caddy2-gitspace.git
 cd caddy2-k8s
 
 # 构建 Docker 镜像

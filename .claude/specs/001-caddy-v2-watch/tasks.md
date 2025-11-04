@@ -49,7 +49,7 @@
 ### T001 初始化 Go 模块和依赖
 **文件**：`go.mod`、`go.sum`
 **操作**：
-- 运行 `go mod init github.com/ysicing/caddy2-k8s`（如果尚未初始化）
+- 运行 `go mod init github.com/ysicing/caddy2-gitspace`（如果尚未初始化）
 - 添加主要依赖：
   ```bash
   go get github.com/caddyserver/caddy/v2@latest

@@ -10,8 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/ysicing/caddy2-k8s/k8s"
-	"github.com/ysicing/caddy2-k8s/router"
+	"github.com/ysicing/caddy2-gitspace/k8s"
+	"github.com/ysicing/caddy2-gitspace/router"
 	"go.uber.org/zap"
 )
 

@@ -189,7 +189,7 @@ curl http://localhost:30080/healthz
 
 ```bash
 # 编译 Caddy（包含插件）
-xcaddy build --with github.com/ysicing/caddy2-k8s=.
+xcaddy build --with github.com/ysicing/caddy2-gitspace=.
 
 # 使用本地 Caddyfile 运行（需要在集群外配置 kubeconfig）
 export KUBECONFIG=~/.kube/config

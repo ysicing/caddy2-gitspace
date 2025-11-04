@@ -231,7 +231,7 @@ type RouteIDTracker struct {
 ```bash
 # 1. 使用 xcaddy 编译带插件的 Caddy
 xcaddy build \
-  --with github.com/ysicing/caddy2-k8s
+  --with github.com/ysicing/caddy2-gitspace
 
 # 2. 部署到 Kubernetes
 kubectl apply -f deployments/

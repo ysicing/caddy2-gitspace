@@ -1,4 +1,4 @@
-module github.com/ysicing/caddy2-k8s
+module github.com/ysicing/caddy2-gitspace
 
 go 1.25.3
 
