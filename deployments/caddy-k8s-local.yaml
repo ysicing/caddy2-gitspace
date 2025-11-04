@@ -1,15 +1,52 @@
 ---
+# ServiceAccount for Caddy K8s Router
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: caddy-k8s
+  namespace: gaeaflow-spaces
+---
+# ClusterRole: 定义 Caddy 需要的权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: caddy-k8s-reader
+rules:
+  # 读取 Deployments
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+
+  # 读取 Pods（用于查询 Pod IP）
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding: 绑定权限到 ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: caddy-k8s-reader-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: caddy-k8s-reader
+subjects:
+  - kind: ServiceAccount
+    name: caddy-k8s
+    namespace: gaeaflow-spaces
+---
 # ConfigMap: Caddyfile 配置（本地测试 - HTTP only）
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: caddy-config-local
-  namespace: default
+  namespace: gaeaflow-spaces
 data:
   Caddyfile: |
     {
       admin localhost:2019
-      persist_config off
       auto_https off
       log {
         output stdout
@@ -18,7 +55,7 @@ data:
       }
     }
 
-    :80 {
+    *.{$BASE_DOMAIN} {
       k8s_router {
         namespace {$K8S_NAMESPACE}
         base_domain {$BASE_DOMAIN}
@@ -41,7 +78,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: caddy-k8s-local
-  namespace: default
+  namespace: gaeaflow-spaces
   labels:
     app: caddy-k8s-local
 spec:
@@ -58,7 +95,7 @@ spec:
       containers:
         - name: caddy
           # 使用本地构建的镜像
-          image: caddy-k8s:local
+          image: ysicing/caddy
           imagePullPolicy: IfNotPresent
 
           ports:
@@ -72,11 +109,11 @@ spec:
           env:
             # K8s 命名空间
             - name: K8S_NAMESPACE
-              value: "default"
+              value: "gaeaflow-spaces"
 
             # 基础域名（本地测试使用 localhost 或 .local）
             - name: BASE_DOMAIN
-              value: "localhost"
+              value: "flow.talkdev.webpod.eu.org"
 
             # 默认端口
             - name: DEFAULT_PORT
@@ -125,7 +162,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: caddy-k8s-local
-  namespace: default
+  namespace: gaeaflow-spaces
   labels:
     app: caddy-k8s-local
 spec:
@@ -137,4 +174,3 @@ spec:
       port: 80
       targetPort: 80
       protocol: TCP
-      nodePort: 30080  # 固定 NodePort 方便访问

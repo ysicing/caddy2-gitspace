@@ -46,7 +46,7 @@ type K8sRouter struct {
 // CaddyModule 返回模块信息
 func (K8sRouter) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.k8s_router",
+		ID:  "k8s_router",
 		New: func() caddy.Module { return new(K8sRouter) },
 	}
 }
@@ -386,5 +386,6 @@ func (kr *K8sRouter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 var (
 	_ caddy.Provisioner     = (*K8sRouter)(nil)
 	_ caddy.Validator       = (*K8sRouter)(nil)
+	_ caddy.App             = (*K8sRouter)(nil)
 	_ caddyfile.Unmarshaler = (*K8sRouter)(nil)
 )

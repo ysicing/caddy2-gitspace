@@ -6,6 +6,15 @@
 		access_key_id {$ALICLOUD_ACCESS_KEY}
 		access_key_secret {$ALICLOUD_SECRET_KEY}
 	}
+
+	# K8s Router 配置
+	k8s_router {
+		namespace {$K8S_NAMESPACE:default}
+		base_domain {$BASE_DOMAIN:example.com}
+		default_port {$DEFAULT_PORT:8089}
+		# 注意: 插件只监控带有 gitspace.app.io/managed-by=caddy 标签的 Deployment
+		# 这是硬编码的筛选规则，不可配置
+	}
 }
 
 # HTTPS 通配符域名
@@ -15,14 +24,6 @@
 			access_key_id {$ALICLOUD_ACCESS_KEY}
 			access_key_secret {$ALICLOUD_SECRET_KEY}
 		}
-	}
-
-	k8s_router {
-		namespace {$K8S_NAMESPACE:default}
-		base_domain {$BASE_DOMAIN:example.com}
-		default_port {$DEFAULT_PORT:8089}
-		# 注意: 插件只监控带有 gitspace.app.io/managed-by=caddy 标签的 Deployment
-		# 这是硬编码的筛选规则，不可配置
 	}
 
 	handle /healthz {

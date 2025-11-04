@@ -1,4 +1,4 @@
-# 第一阶段：编译 Caddy（含 K8s 插件）
+# 第一阶段：编译 Caddy（含 K8s 插件 + AliDNS）
 FROM golang:1.25.3-alpine AS builder
 
 WORKDIR /app
@@ -9,8 +9,8 @@ RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 # 复制源代码
 COPY . .
 
-# 使用 xcaddy 编译 Caddy（包含本地模块）
-RUN xcaddy build --with github.com/ysicing/caddy2-gitspace=.
+# 使用 xcaddy 编译 Caddy（包含本地模块 + AliDNS 插件）
+RUN xcaddy build --with github.com/ysicing/caddy2-gitspace=. --with github.com/caddy-dns/alidns
 
 # 第二阶段：运行时镜像
 FROM alpine:latest
