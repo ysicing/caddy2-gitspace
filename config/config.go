@@ -25,11 +25,19 @@ type Config struct {
 	// ResyncPeriod Informer 重新同步周期
 	ResyncPeriod string `json:"resync_period,omitempty"`
 
+	// ReconcilePeriod 全量对账周期
+	ReconcilePeriod string `json:"reconcile_period,omitempty"`
+
 	// CaddyAdminURL Caddy Admin API 地址
 	CaddyAdminURL string `json:"caddy_admin_url,omitempty"`
 
 	// CaddyServerName Caddy Server 名称
 	CaddyServerName string `json:"caddy_server_name,omitempty"`
+
+	// LabelSelector 用于筛选需要管理的 Deployment
+	// 格式: "key1=value1,key2=value2"
+	// 如果为空,则监控所有 Deployment
+	LabelSelector string `json:"label_selector,omitempty"`
 }
 
 // Validate 验证配置有效性
@@ -68,6 +76,16 @@ func (c *Config) Validate() error {
 		c.ResyncPeriod = "30s"
 	}
 
+	// 验证 ReconcilePeriod 格式
+	if c.ReconcilePeriod != "" {
+		if _, err := time.ParseDuration(c.ReconcilePeriod); err != nil {
+			return fmt.Errorf("invalid reconcile_period format: %w", err)
+		}
+	} else {
+		// 设置默认对账周期为 5 分钟
+		c.ReconcilePeriod = "5m"
+	}
+
 	// 验证 Caddy Admin URL
 	if c.CaddyAdminURL != "" {
 		if _, err := url.Parse(c.CaddyAdminURL); err != nil {
@@ -103,5 +121,11 @@ func Load(data []byte) (*Config, error) {
 // GetResyncPeriodDuration 返回解析后的重新同步周期
 func (c *Config) GetResyncPeriodDuration() time.Duration {
 	duration, _ := time.ParseDuration(c.ResyncPeriod)
+	return duration
+}
+
+// GetReconcilePeriodDuration 返回解析后的对账周期
+func (c *Config) GetReconcilePeriodDuration() time.Duration {
+	duration, _ := time.ParseDuration(c.ReconcilePeriod)
 	return duration
 }

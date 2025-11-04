@@ -7,6 +7,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -28,6 +29,7 @@ type EventHandler interface {
 type Watcher struct {
 	clientset       kubernetes.Interface
 	namespace       string
+	labelSelector   string
 	informerFactory informers.SharedInformerFactory
 	eventHandler    EventHandler
 	stopCh          chan struct{}
@@ -40,19 +42,33 @@ type Watcher struct {
 func NewWatcher(
 	clientset kubernetes.Interface,
 	namespace string,
+	labelSelector string,
 	resyncPeriod time.Duration,
 	eventHandler EventHandler,
 ) *Watcher {
-	// 创建 SharedInformerFactory（限定命名空间）
+	// 创建 SharedInformerFactory 配置选项
+	options := []informers.SharedInformerOption{
+		informers.WithNamespace(namespace),
+	}
+
+	// 如果配置了 label selector,添加到选项中
+	if labelSelector != "" {
+		options = append(options, informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			opts.LabelSelector = labelSelector
+		}))
+	}
+
+	// 创建 SharedInformerFactory
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
-		informers.WithNamespace(namespace),
+		options...,
 	)
 
 	return &Watcher{
 		clientset:       clientset,
 		namespace:       namespace,
+		labelSelector:   labelSelector,
 		informerFactory: informerFactory,
 		eventHandler:    eventHandler,
 		stopCh:          make(chan struct{}),

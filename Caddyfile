@@ -1,6 +1,5 @@
 {
 	admin localhost:2019
-	persist_config off
 
 	# 阿里云 DNS API 配置
 	acme_dns alidns {
@@ -22,6 +21,9 @@
 		namespace {$K8S_NAMESPACE:default}
 		base_domain {$BASE_DOMAIN:example.com}
 		default_port {$DEFAULT_PORT:8089}
+		# 可选: 通过 label selector 筛选需要管理的 Deployment
+		# label_selector "app.kubernetes.io/managed-by=caddy"
+		# label_selector "env=production,team=backend"
 	}
 
 	handle /healthz {

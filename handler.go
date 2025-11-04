@@ -1,4 +1,4 @@
-package main
+package caddy2k8s
 
 import (
 	"context"
@@ -196,7 +196,7 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 
 	// 生成 Route ID 和域名
 	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
-	routeID := router.BuildRouteID(deployment.Namespace, deployment.Name)
+	routeID := router.BuildRouteID(deployment.Name)
 	domain := fmt.Sprintf("%s.%s", deployment.Name, h.baseDomain)
 
 	// 调用 Admin API 创建路由

@@ -1,4 +1,4 @@
-package main
+package caddy2k8s
 
 import (
 	"context"
@@ -12,6 +12,8 @@ import (
 	"github.com/ysicing/caddy2-k8s/k8s"
 	"github.com/ysicing/caddy2-k8s/router"
 	"go.uber.org/zap"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 func init() {
@@ -26,14 +28,17 @@ type K8sRouter struct {
 	DefaultPort     int    `json:"default_port,omitempty"`
 	KubeConfig      string `json:"kubeconfig,omitempty"`
 	ResyncPeriod    string `json:"resync_period,omitempty"`
+	ReconcilePeriod string `json:"reconcile_period,omitempty"`
 	CaddyAdminURL   string `json:"caddy_admin_url,omitempty"`
 	CaddyServerName string `json:"caddy_server_name,omitempty"`
+	LabelSelector   string `json:"label_selector,omitempty"`
 
 	// 内部状态（运行时初始化）
 	config      *config.Config
 	adminClient *router.AdminAPIClient
 	tracker     *router.RouteIDTracker
 	watcher     *k8s.Watcher
+	k8sClient   kubernetes.Interface
 	ctx         context.Context
 	cancel      context.CancelFunc
 	logger      *zap.Logger
@@ -58,8 +63,10 @@ func (kr *K8sRouter) Provision(ctx caddy.Context) error {
 		DefaultPort:     kr.DefaultPort,
 		KubeConfig:      kr.KubeConfig,
 		ResyncPeriod:    kr.ResyncPeriod,
+		ReconcilePeriod: kr.ReconcilePeriod,
 		CaddyAdminURL:   kr.CaddyAdminURL,
 		CaddyServerName: kr.CaddyServerName,
+		LabelSelector:   kr.LabelSelector,
 	}
 
 	// 验证配置
@@ -96,6 +103,7 @@ func (kr *K8sRouter) Start() error {
 	if err != nil {
 		return err
 	}
+	kr.k8sClient = clientset
 
 	// 2. 创建 AdminAPIClient
 	kr.adminClient = router.NewAdminAPIClient(kr.config.CaddyAdminURL, kr.config.CaddyServerName)
@@ -124,6 +132,7 @@ func (kr *K8sRouter) Start() error {
 	kr.watcher = k8s.NewWatcher(
 		clientset,
 		kr.config.Namespace,
+		kr.config.LabelSelector,
 		kr.config.GetResyncPeriodDuration(),
 		eventHandler,
 	)
@@ -135,9 +144,20 @@ func (kr *K8sRouter) Start() error {
 		}
 	}()
 
+	// 7. 启动时执行一次对账
+	go func() {
+		if err := kr.reconcileRoutesWithK8s(); err != nil {
+			kr.logger.Warn("Initial reconciliation failed", zap.Error(err))
+		}
+	}()
+
+	// 8. 启动定期对账 goroutine
+	go kr.runPeriodicReconciliation()
+
 	kr.logger.Info("K8s router started",
 		zap.String("namespace", kr.config.Namespace),
 		zap.String("base_domain", kr.config.BaseDomain),
+		zap.Duration("reconcile_period", kr.config.GetReconcilePeriodDuration()),
 	)
 
 	return nil
@@ -171,13 +191,13 @@ func (kr *K8sRouter) recoverTracker() error {
 
 	// 从 routeID 反推 deploymentKey，并缓存 TargetAddr
 	for _, route := range routes {
-		namespace, name, err := router.ParseRouteID(route.ID)
+		name, err := router.ParseRouteID(route.ID)
 		if err != nil {
 			kr.logger.Warn("Skipping route with unrecognized id", zap.String("route_id", route.ID), zap.Error(err))
 			continue
 		}
 
-		deploymentKey := fmt.Sprintf("%s/%s", namespace, name)
+		deploymentKey := fmt.Sprintf("%s/%s", kr.config.Namespace, name)
 		kr.tracker.Set(deploymentKey, route.ID, route.TargetAddr)
 		kr.logger.Info("Recovered route",
 			zap.String("route_id", route.ID),
@@ -191,6 +211,109 @@ func (kr *K8sRouter) recoverTracker() error {
 	)
 
 	return nil
+}
+
+// reconcileRoutesWithK8s 全量对账 Caddy 路由与 K8s Deployment 状态
+func (kr *K8sRouter) reconcileRoutesWithK8s() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	kr.logger.Info("Starting route reconciliation...")
+
+	// 1. 获取 Caddy 中所有管理的路由
+	routes, err := kr.adminClient.ListRoutes(ctx)
+	if err != nil {
+		kr.logger.Error("Failed to list Caddy routes during reconciliation", zap.Error(err))
+		return err
+	}
+
+	// 构建 Caddy 路由集合 (routeID -> route)
+	caddyRoutes := make(map[string]*router.RouteConfig)
+	for _, route := range routes {
+		if router.IsManagedRouteID(route.ID) {
+			caddyRoutes[route.ID] = route
+		}
+	}
+
+	// 2. 获取 K8s 中所有符合条件的 Deployment (replicas=1 && ready)
+	deployments, err := kr.k8sClient.AppsV1().Deployments(kr.config.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		kr.logger.Error("Failed to list K8s deployments during reconciliation", zap.Error(err))
+		return err
+	}
+
+	// 构建期望的路由集合
+	expectedRoutes := make(map[string]bool)
+	for i := range deployments.Items {
+		deployment := &deployments.Items[i]
+
+		// 只处理单副本 Deployment
+		replicas := k8s.DesiredReplicaCount(deployment)
+		if replicas != 1 {
+			continue
+		}
+
+		// 只处理就绪的 Deployment
+		if !isDeploymentReady(deployment) {
+			continue
+		}
+
+		routeID := router.BuildRouteID(deployment.Name)
+		expectedRoutes[routeID] = true
+	}
+
+	// 3. 删除 Caddy 中存在但 K8s 中不存在的路由（清理孤立路由）
+	deletedCount := 0
+	for routeID := range caddyRoutes {
+		if !expectedRoutes[routeID] {
+			kr.logger.Info("Reconciliation: deleting orphaned route",
+				zap.String("route_id", routeID),
+			)
+
+			if err := kr.adminClient.DeleteRoute(ctx, routeID); err != nil {
+				kr.logger.Warn("Failed to delete orphaned route during reconciliation",
+					zap.String("route_id", routeID),
+					zap.Error(err),
+				)
+			} else {
+				// 从 tracker 中清理
+				name, _ := router.ParseRouteID(routeID)
+				deploymentKey := fmt.Sprintf("%s/%s", kr.config.Namespace, name)
+				kr.tracker.Delete(deploymentKey)
+				deletedCount++
+			}
+		}
+	}
+
+	// 4. 对于 K8s 中存在但 Caddy 中缺失的路由，由 Informer 的 resync 机制自动创建
+	// 这里不主动创建，避免与事件处理冲突
+
+	kr.logger.Info("Route reconciliation completed",
+		zap.Int("caddy_routes", len(caddyRoutes)),
+		zap.Int("expected_routes", len(expectedRoutes)),
+		zap.Int("deleted_orphaned", deletedCount),
+	)
+
+	return nil
+}
+
+// runPeriodicReconciliation 定期执行对账
+func (kr *K8sRouter) runPeriodicReconciliation() {
+	ticker := time.NewTicker(kr.config.GetReconcilePeriodDuration())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			kr.logger.Debug("Running periodic reconciliation...")
+			if err := kr.reconcileRoutesWithK8s(); err != nil {
+				kr.logger.Warn("Periodic reconciliation failed", zap.Error(err))
+			}
+		case <-kr.ctx.Done():
+			kr.logger.Info("Stopping periodic reconciliation")
+			return
+		}
+	}
 }
 
 // UnmarshalCaddyfile 支持 Caddyfile 配置格式
@@ -235,6 +358,12 @@ func (kr *K8sRouter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			kr.ResyncPeriod = d.Val()
 
+		case "reconcile_period":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			kr.ReconcilePeriod = d.Val()
+
 		case "caddy_admin_url":
 			if !d.NextArg() {
 				return d.ArgErr()
@@ -246,6 +375,12 @@ func (kr *K8sRouter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			kr.CaddyServerName = d.Val()
+
+		case "label_selector":
+			if !d.NextArg() {
+				return d.ArgErr()
+			}
+			kr.LabelSelector = d.Val()
 
 		default:
 			return d.Errf("unrecognized subdirective: %s", d.Val())
