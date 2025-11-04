@@ -133,12 +133,14 @@ func (w *Watcher) registerDeploymentHandlers(informer cache.SharedIndexInformer)
 // registerPodHandlers 注册 Pod 事件处理器
 func (w *Watcher) registerPodHandlers(informer cache.SharedIndexInformer) {
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    w.handlePodAdd,
 		UpdateFunc: w.handlePodUpdate,
+		DeleteFunc: w.handlePodDelete,
 	})
 }
 
 // handleDeploymentAdd 处理 Deployment 创建事件
-func (w *Watcher) handleDeploymentAdd(obj interface{}) {
+func (w *Watcher) handleDeploymentAdd(obj any) {
 	deployment, ok := obj.(*appsv1.Deployment)
 	if !ok {
 		return
@@ -158,7 +160,7 @@ func (w *Watcher) handleDeploymentAdd(obj interface{}) {
 }
 
 // handleDeploymentUpdate 处理 Deployment 更新事件
-func (w *Watcher) handleDeploymentUpdate(oldObj, newObj interface{}) {
+func (w *Watcher) handleDeploymentUpdate(oldObj, newObj any) {
 	oldDeployment, ok1 := oldObj.(*appsv1.Deployment)
 	newDeployment, ok2 := newObj.(*appsv1.Deployment)
 	if !ok1 || !ok2 {
@@ -185,7 +187,7 @@ func (w *Watcher) handleDeploymentUpdate(oldObj, newObj interface{}) {
 }
 
 // handleDeploymentDelete 处理 Deployment 删除事件
-func (w *Watcher) handleDeploymentDelete(obj interface{}) {
+func (w *Watcher) handleDeploymentDelete(obj any) {
 	deployment, ok := obj.(*appsv1.Deployment)
 	if !ok {
 		// 处理 DeletedFinalStateUnknown 情况
@@ -204,8 +206,26 @@ func (w *Watcher) handleDeploymentDelete(obj interface{}) {
 	}
 }
 
+// handlePodAdd 处理 Pod 创建事件（新 Pod 启动）
+func (w *Watcher) handlePodAdd(obj any) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return
+	}
+
+	// 只处理就绪的 Pod
+	if !IsPodReady(pod) {
+		return
+	}
+
+	// Pod 就绪后，创建路由
+	if err := w.eventHandler.OnPodUpdate(nil, pod); err != nil {
+		return
+	}
+}
+
 // handlePodUpdate 处理 Pod 更新事件
-func (w *Watcher) handlePodUpdate(oldObj, newObj interface{}) {
+func (w *Watcher) handlePodUpdate(oldObj, newObj any) {
 	oldPod, ok1 := oldObj.(*corev1.Pod)
 	newPod, ok2 := newObj.(*corev1.Pod)
 	if !ok1 || !ok2 {
@@ -222,11 +242,26 @@ func (w *Watcher) handlePodUpdate(oldObj, newObj interface{}) {
 			return
 		}
 	}
+}
 
-	// 检查 Pod IP 变化（Pod 重启场景）
-	if oldPod.Status.PodIP != newPod.Status.PodIP && newPod.Status.PodIP != "" {
-		if err := w.eventHandler.OnPodUpdate(oldPod, newPod); err != nil {
+// handlePodDelete 处理 Pod 删除事件
+func (w *Watcher) handlePodDelete(obj any) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		// 处理 DeletedFinalStateUnknown 情况
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
 			return
 		}
+		pod, ok = tombstone.Obj.(*corev1.Pod)
+		if !ok {
+			return
+		}
+	}
+
+	// Pod 删除时，删除对应的路由
+	// 传递 nil 作为 newPod 表示 Pod 已删除
+	if err := w.eventHandler.OnPodUpdate(pod, nil); err != nil {
+		return
 	}
 }
