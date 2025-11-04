@@ -1,3 +1,20 @@
+# Caddy2-k8s 示例 Deployment 配置
+#
+# 本文件演示如何配置 Deployment 以便 Caddy 自动创建路由
+#
+# Label 筛选说明：
+# ----------------
+# Caddy2-k8s 只监控带有以下标签的 Deployment：
+#   gitspace.app.io/managed-by: caddy
+#
+# 这是硬编码的筛选规则，不可配置。
+#
+# 推荐做法：
+# ----------
+# 1. 在 metadata.labels 中添加 gitspace.app.io/managed-by: caddy
+# 2. 同时在 spec.template.metadata.labels 中添加相同标签（Pod 继承）
+# 3. 只有带此标签的 Deployment 才会被自动管理路由
+
 ---
 # 示例 1：VSCode Deployment（使用自定义端口）
 apiVersion: apps/v1
@@ -5,6 +22,9 @@ kind: Deployment
 metadata:
   name: vscode
   namespace: default
+  labels:
+    # 必需：此标签是强制性的，Caddy 只监控带此标签的 Deployment
+    gitspace.app.io/managed-by: caddy
   annotations:
     # 指定端口（Caddy 会将流量转发到 Pod 的 8080 端口）
     gitspace.caddy.default.port: "8080"
@@ -17,6 +37,7 @@ spec:
     metadata:
       labels:
         app: vscode
+        gitspace.app.io/managed-by: caddy
     spec:
       containers:
         - name: vscode
@@ -34,6 +55,8 @@ kind: Deployment
 metadata:
   name: jupyter
   namespace: default
+  labels:
+    gitspace.app.io/managed-by: caddy
   # 没有指定端口注解，将使用默认端口 8089
 spec:
   replicas: 1
@@ -44,6 +67,7 @@ spec:
     metadata:
       labels:
         app: jupyter
+        gitspace.app.io/managed-by: caddy
     spec:
       containers:
         - name: jupyter
@@ -61,6 +85,8 @@ kind: Deployment
 metadata:
   name: myapp
   namespace: default
+  labels:
+    gitspace.app.io/managed-by: caddy
   annotations:
     gitspace.caddy.default.port: "3000"
 spec:
@@ -72,9 +98,35 @@ spec:
     metadata:
       labels:
         app: myapp
+        gitspace.app.io/managed-by: caddy
     spec:
       containers:
         - name: app
           image: your-app:latest
           ports:
             - containerPort: 3000
+
+---
+# 示例 4：不被管理的 Deployment（没有指定 Label）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unmanaged-app
+  namespace: default
+  # 注意：没有 gitspace.app.io/managed-by: caddy 标签
+  # 此 Deployment 不会被 Caddy 监控和管理
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: unmanaged
+  template:
+    metadata:
+      labels:
+        app: unmanaged
+    spec:
+      containers:
+        - name: app
+          image: nginx:latest
+          ports:
+            - containerPort: 80

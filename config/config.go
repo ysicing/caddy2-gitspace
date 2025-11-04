@@ -33,11 +33,6 @@ type Config struct {
 
 	// CaddyServerName Caddy Server 名称
 	CaddyServerName string `json:"caddy_server_name,omitempty"`
-
-	// LabelSelector 用于筛选需要管理的 Deployment
-	// 格式: "key1=value1,key2=value2"
-	// 如果为空,则监控所有 Deployment
-	LabelSelector string `json:"label_selector,omitempty"`
 }
 
 // Validate 验证配置有效性
@@ -128,4 +123,10 @@ func (c *Config) GetResyncPeriodDuration() time.Duration {
 func (c *Config) GetReconcilePeriodDuration() time.Duration {
 	duration, _ := time.ParseDuration(c.ReconcilePeriod)
 	return duration
+}
+
+// GetLabelSelector 返回硬编码的 Label Selector
+// 固定为 "gitspace.app.io/managed-by=caddy"
+func (c *Config) GetLabelSelector() string {
+	return "gitspace.app.io/managed-by=caddy"
 }

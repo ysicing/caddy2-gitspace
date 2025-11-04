@@ -31,7 +31,6 @@ type K8sRouter struct {
 	ReconcilePeriod string `json:"reconcile_period,omitempty"`
 	CaddyAdminURL   string `json:"caddy_admin_url,omitempty"`
 	CaddyServerName string `json:"caddy_server_name,omitempty"`
-	LabelSelector   string `json:"label_selector,omitempty"`
 
 	// 内部状态（运行时初始化）
 	config      *config.Config
@@ -66,7 +65,6 @@ func (kr *K8sRouter) Provision(ctx caddy.Context) error {
 		ReconcilePeriod: kr.ReconcilePeriod,
 		CaddyAdminURL:   kr.CaddyAdminURL,
 		CaddyServerName: kr.CaddyServerName,
-		LabelSelector:   kr.LabelSelector,
 	}
 
 	// 验证配置
@@ -132,7 +130,7 @@ func (kr *K8sRouter) Start() error {
 	kr.watcher = k8s.NewWatcher(
 		clientset,
 		kr.config.Namespace,
-		kr.config.LabelSelector,
+		kr.config.GetLabelSelector(), // 使用硬编码的 label selector
 		kr.config.GetResyncPeriodDuration(),
 		eventHandler,
 	)
@@ -375,12 +373,6 @@ func (kr *K8sRouter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			kr.CaddyServerName = d.Val()
-
-		case "label_selector":
-			if !d.NextArg() {
-				return d.ArgErr()
-			}
-			kr.LabelSelector = d.Val()
 
 		default:
 			return d.Errf("unrecognized subdirective: %s", d.Val())

@@ -61,7 +61,6 @@ kubectl apply -f deployments/caddy-k8s.yaml
 | `namespace` | ✅ | - | 监听的 Kubernetes 命名空间 |
 | `base_domain` | ✅ | - | 基础域名(如 example.com) |
 | `default_port` | ❌ | 8089 | 默认端口(Deployment 缺少端口注解时使用) |
-| `label_selector` | ❌ | - | Label 选择器,用于筛选需要管理的 Deployment |
 | `kubeconfig` | ❌ | 自动检测 | Kubernetes 配置文件路径 |
 | `resync_period` | ❌ | 30s | Informer 重新同步周期 |
 | `reconcile_period` | ❌ | 5m | 全量对账周期 |
@@ -70,20 +69,22 @@ kubectl apply -f deployments/caddy-k8s.yaml
 
 ### Label Selector 筛选
 
-默认情况下,插件会监控命名空间下所有单副本 Deployment。通过 `label_selector` 可以精确控制哪些 Deployment 需要自动路由:
+**重要：Caddy2-k8s 仅监控带有以下标签的 Deployment：**
+
+```yaml
+gitspace.app.io/managed-by: caddy
+```
+
+这是硬编码的筛选规则，不可配置。只有带此标签的 Deployment 才会自动创建路由。
+
+**配置示例：**
 
 ```
 k8s_router {
     namespace default
     base_domain example.com
-    # 只管理带有特定标签的 Deployment
-    label_selector "app.kubernetes.io/managed-by=caddy"
+    # 不需要配置 label_selector，默认只监控带 gitspace.app.io/managed-by=caddy 的 Deployment
 }
-```
-
-多个 label 使用逗号分隔:
-```
-label_selector "env=production,team=backend"
 ```
 
 ## Deployment 注解
@@ -122,8 +123,8 @@ metadata:
   name: vscode
   namespace: default
   labels:
-    # 可选: 添加标签用于筛选
-    app.kubernetes.io/managed-by: caddy
+    # 必需：此标签是强制性的
+    gitspace.app.io/managed-by: caddy
   annotations:
     # 指定应用监听的端口
     gitspace.caddy.default.port: "8080"
@@ -136,7 +137,7 @@ spec:
     metadata:
       labels:
         app: vscode
-        app.kubernetes.io/managed-by: caddy
+        gitspace.app.io/managed-by: caddy
     spec:
       containers:
         - name: vscode
