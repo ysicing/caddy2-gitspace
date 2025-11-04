@@ -64,14 +64,14 @@ func (c *AdminAPIClient) CreateRoute(
 	}
 
 	// 构造路由配置
-	routeConfig := map[string]interface{}{
+	routeConfig := map[string]any{
 		"@id": routeID,
-		"match": []map[string]interface{}{
+		"match": []map[string]any{
 			{
 				"host": []string{domain},
 			},
 		},
-		"handle": []map[string]interface{}{
+		"handle": []map[string]any{
 			{
 				"handler": "reverse_proxy",
 				"upstreams": []map[string]string{
@@ -212,7 +212,8 @@ func (c *AdminAPIClient) GetRoute(ctx context.Context, routeID string) (*RouteCo
 }
 
 // ListRoutes 列出所有 k8s-* 路由（用于恢复 RouteIDTracker）
-func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]string, error) {
+// 返回完整的 RouteConfig 以便缓存 TargetAddr
+func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]*RouteConfig, error) {
 	url := fmt.Sprintf("%s/config/apps/http/servers/%s/routes", c.baseURL, c.serverName)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -237,13 +238,38 @@ func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// 过滤出 k8s-* 路由
-	var routeIDs []string
+	// 过滤并解析 k8s-* 路由
+	var configs []*RouteConfig
 	for _, route := range routes {
-		if id, ok := route["@id"].(string); ok && strings.HasPrefix(id, "k8s-") {
-			routeIDs = append(routeIDs, id)
+		id, ok := route["@id"].(string)
+		if !ok || !strings.HasPrefix(id, "k8s-") {
+			continue
 		}
+
+		config := &RouteConfig{ID: id}
+
+		// 提取 domain（match.host[0]）
+		if match, ok := route["match"].([]interface{}); ok && len(match) > 0 {
+			if matchItem, ok := match[0].(map[string]interface{}); ok {
+				if hosts, ok := matchItem["host"].([]interface{}); ok && len(hosts) > 0 {
+					config.Domain, _ = hosts[0].(string)
+				}
+			}
+		}
+
+		// 提取 targetAddr（upstreams[0].dial）
+		if handle, ok := route["handle"].([]interface{}); ok && len(handle) > 0 {
+			if handleItem, ok := handle[0].(map[string]interface{}); ok {
+				if upstreams, ok := handleItem["upstreams"].([]interface{}); ok && len(upstreams) > 0 {
+					if upstream, ok := upstreams[0].(map[string]interface{}); ok {
+						config.TargetAddr, _ = upstream["dial"].(string)
+					}
+				}
+			}
+		}
+
+		configs = append(configs, config)
 	}
 
-	return routeIDs, nil
+	return configs, nil
 }

@@ -139,7 +139,7 @@ func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.D
 		}
 
 		// 保持就绪状态 → 可能是 Pod 重建（IP 变化）
-		// 重新查询 Pod IP 并更新路由
+		// 使用缓存的 TargetAddr 检查 Pod IP 是否变化，避免频繁调用 GetRoute
 		if oldReady && newReady {
 			// 检查是否有就绪的 Pod
 			pod, err := h.findReadyPod(newDeployment)
@@ -148,34 +148,29 @@ func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.D
 			}
 
 			if pod != nil {
-				// 获取当前路由的 Pod IP
+				// 计算期望的 target address
+				expectedAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, getPortFromDeployment(newDeployment, h.defaultPort))
+
+				// 从 Tracker 查询缓存的路由信息
 				deploymentKey := fmt.Sprintf("%s/%s", newDeployment.Namespace, newDeployment.Name)
-				routeID, exists := h.tracker.Get(deploymentKey)
+				routeInfo, exists := h.tracker.Get(deploymentKey)
 
-				if exists {
-					// 查询当前路由配置
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-
-					currentRoute, err := h.adminClient.GetRoute(ctx, routeID)
-					if err == nil && currentRoute != nil {
-						expectedAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, getPortFromDeployment(newDeployment, h.defaultPort))
-
-						// 如果 Pod IP 变化了，更新路由
-						if currentRoute.TargetAddr != expectedAddr {
-							h.logger.Info("Pod IP changed, updating route",
-								zap.String("deployment", newDeployment.Name),
-								zap.String("old_target", currentRoute.TargetAddr),
-								zap.String("new_target", expectedAddr),
-							)
-							// 删除旧路由
-							if err := h.deleteRoute(newDeployment); err != nil {
-								h.logger.Error("Failed to delete old route", zap.Error(err))
-							}
-							// 创建新路由
-							return h.createRoute(newDeployment, pod)
+				if exists && routeInfo != nil {
+					// 比较缓存的 TargetAddr 与期望值
+					if routeInfo.TargetAddr != expectedAddr {
+						h.logger.Info("Pod IP changed, updating route",
+							zap.String("deployment", newDeployment.Name),
+							zap.String("old_target", routeInfo.TargetAddr),
+							zap.String("new_target", expectedAddr),
+						)
+						// 删除旧路由
+						if err := h.deleteRoute(newDeployment); err != nil {
+							h.logger.Error("Failed to delete old route", zap.Error(err))
 						}
+						// 创建新路由
+						return h.createRoute(newDeployment, pod)
 					}
+					// Pod IP 没有变化，跳过更新
 				} else {
 					// 没有路由，创建新路由
 					return h.createRoute(newDeployment, pod)
@@ -224,8 +219,9 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 		return err
 	}
 
-	// 记录到 Tracker
-	h.tracker.Set(deploymentKey, routeID)
+	// 记录到 Tracker（缓存 RouteID 和 TargetAddr）
+	targetAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, port)
+	h.tracker.Set(deploymentKey, routeID, targetAddr)
 
 	h.logger.Info("Route created",
 		zap.String("deployment", deployment.Name),
@@ -258,9 +254,9 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 func (h *EventHandler) deleteRoute(deployment *appsv1.Deployment) error {
 	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
 
-	// 从 Tracker 查找 Route ID
-	routeID, exists := h.tracker.Get(deploymentKey)
-	if !exists {
+	// 从 Tracker 查找 Route 信息
+	routeInfo, exists := h.tracker.Get(deploymentKey)
+	if !exists || routeInfo == nil {
 		h.logger.Debug("No route to delete",
 			zap.String("deployment", deployment.Name),
 		)
@@ -271,10 +267,10 @@ func (h *EventHandler) deleteRoute(deployment *appsv1.Deployment) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := h.adminClient.DeleteRoute(ctx, routeID); err != nil {
+	if err := h.adminClient.DeleteRoute(ctx, routeInfo.RouteID); err != nil {
 		h.logger.Error("Failed to delete route",
 			zap.String("deployment", deployment.Name),
-			zap.String("route_id", routeID),
+			zap.String("route_id", routeInfo.RouteID),
 			zap.Error(err),
 		)
 		return err
@@ -285,7 +281,7 @@ func (h *EventHandler) deleteRoute(deployment *appsv1.Deployment) error {
 
 	h.logger.Info("Route deleted",
 		zap.String("deployment", deployment.Name),
-		zap.String("route_id", routeID),
+		zap.String("route_id", routeInfo.RouteID),
 	)
 
 	return nil
