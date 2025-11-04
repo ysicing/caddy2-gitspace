@@ -14,8 +14,8 @@ import (
 
 // AdminAPIClient 封装 Caddy Admin API 调用
 type AdminAPIClient struct {
-	baseURL    string       // http://localhost:2019
-	serverName string       // srv0
+	baseURL    string // http://localhost:2019
+	serverName string // srv0
 	httpClient *http.Client
 }
 
@@ -211,7 +211,7 @@ func (c *AdminAPIClient) GetRoute(ctx context.Context, routeID string) (*RouteCo
 	return config, nil
 }
 
-// ListRoutes 列出所有 k8s-* 路由（用于恢复 RouteIDTracker）
+// ListRoutes 列出所有由插件管理的路由（用于恢复 RouteIDTracker）
 // 返回完整的 RouteConfig 以便缓存 TargetAddr
 func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]*RouteConfig, error) {
 	url := fmt.Sprintf("%s/config/apps/http/servers/%s/routes", c.baseURL, c.serverName)
@@ -238,11 +238,11 @@ func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]*RouteConfig, error)
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// 过滤并解析 k8s-* 路由
+	// 过滤并解析插件创建的路由
 	var configs []*RouteConfig
 	for _, route := range routes {
 		id, ok := route["@id"].(string)
-		if !ok || !strings.HasPrefix(id, "k8s-") {
+		if !ok || !IsManagedRouteID(id) {
 			continue
 		}
 

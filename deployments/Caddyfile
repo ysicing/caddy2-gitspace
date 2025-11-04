@@ -1,10 +1,5 @@
-# Caddy v2 K8s 动态路由 - Kubernetes 部署配置
-
 {
-	# Admin API 仅监听 localhost（Kubernetes Pod 内部使用）
 	admin localhost:2019
-
-	# 关闭配置持久化（由 k8s_router 插件动态管理）
 	persist_config off
 
 	# 日志配置
@@ -13,23 +8,29 @@
 		format json
 		level INFO
 	}
+
+	# 阿里云 DNS API 配置（用于 DNS-01 验证）
+	acme_dns alidns {
+		access_key_id {$ALICLOUD_ACCESS_KEY}
+		access_key_secret {$ALICLOUD_SECRET_KEY}
+	}
 }
 
-# HTTP 服务
-:80 {
-	# K8s 路由插件配置
+# HTTPS 服务（通配符证书）
+*.{$BASE_DOMAIN} {
+	# TLS 配置（使用阿里云 DNS 验证）
+	tls {
+		dns alidns {
+			access_key_id {$ALICLOUD_ACCESS_KEY}
+			access_key_secret {$ALICLOUD_SECRET_KEY}
+		}
+	}
+
+	# K8s 路由插件
 	k8s_router {
-		# 监听的命名空间（从环境变量读取，默认为 default）
-		namespace {$K8S_NAMESPACE:default}
-
-		# 基础域名（从环境变量读取）
-		base_domain {$BASE_DOMAIN:example.com}
-
-		# 默认端口
-		default_port {$DEFAULT_PORT:8089}
-
-		# Kubernetes 配置（Pod 内使用 in-cluster 配置）
-		# kubeconfig 会自动检测
+		namespace {$K8S_NAMESPACE}
+		base_domain {$BASE_DOMAIN}
+		default_port {$DEFAULT_PORT}
 	}
 
 	# 健康检查端点（用于 Kubernetes 探针）
@@ -37,9 +38,10 @@
 		respond "OK" 200
 	}
 
-	# 可选：添加基本的日志记录
+	# 日志记录
 	log {
 		output stdout
 		format json
 	}
 }
+

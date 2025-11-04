@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -171,20 +170,20 @@ func (kr *K8sRouter) recoverTracker() error {
 	}
 
 	// 从 routeID 反推 deploymentKey，并缓存 TargetAddr
-	// routeID 格式: k8s-{namespace}-{deployment-name}
 	for _, route := range routes {
-		// 提取 namespace 和 deployment name
-		// k8s-default-vscode -> default/vscode
-		parts := strings.SplitN(route.ID, "-", 3) // ["k8s", "default", "vscode"]
-		if len(parts) == 3 {
-			deploymentKey := fmt.Sprintf("%s/%s", parts[1], parts[2])
-			kr.tracker.Set(deploymentKey, route.ID, route.TargetAddr)
-			kr.logger.Info("Recovered route",
-				zap.String("route_id", route.ID),
-				zap.String("deployment_key", deploymentKey),
-				zap.String("target_addr", route.TargetAddr),
-			)
+		namespace, name, err := router.ParseRouteID(route.ID)
+		if err != nil {
+			kr.logger.Warn("Skipping route with unrecognized id", zap.String("route_id", route.ID), zap.Error(err))
+			continue
 		}
+
+		deploymentKey := fmt.Sprintf("%s/%s", namespace, name)
+		kr.tracker.Set(deploymentKey, route.ID, route.TargetAddr)
+		kr.logger.Info("Recovered route",
+			zap.String("route_id", route.ID),
+			zap.String("deployment_key", deploymentKey),
+			zap.String("target_addr", route.TargetAddr),
+		)
 	}
 
 	kr.logger.Info("Tracker recovered",
@@ -258,7 +257,7 @@ func (kr *K8sRouter) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 
 // Interface guards
 var (
-	_ caddy.Provisioner       = (*K8sRouter)(nil)
-	_ caddy.Validator         = (*K8sRouter)(nil)
-	_ caddyfile.Unmarshaler   = (*K8sRouter)(nil)
+	_ caddy.Provisioner     = (*K8sRouter)(nil)
+	_ caddy.Validator       = (*K8sRouter)(nil)
+	_ caddyfile.Unmarshaler = (*K8sRouter)(nil)
 )

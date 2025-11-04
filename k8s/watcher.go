@@ -31,6 +31,7 @@ type Watcher struct {
 	informerFactory informers.SharedInformerFactory
 	eventHandler    EventHandler
 	stopCh          chan struct{}
+	stopOnce        sync.Once
 	ready           bool
 	readyMu         sync.RWMutex
 }
@@ -104,7 +105,9 @@ func (w *Watcher) Start(ctx context.Context) error {
 
 // Stop 停止监听器
 func (w *Watcher) Stop() {
-	close(w.stopCh)
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+	})
 	w.readyMu.Lock()
 	w.ready = false
 	w.readyMu.Unlock()

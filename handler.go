@@ -52,9 +52,14 @@ func NewEventHandler(
 func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
 	// 只处理单副本 Deployment
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
+		replicaValue := any("nil")
+		if deployment.Spec.Replicas != nil {
+			replicaValue = *deployment.Spec.Replicas
+		}
+
 		h.logger.Debug("Skipping non-single-replica deployment",
 			zap.String("deployment", deployment.Name),
-			zap.Int32("replicas", *deployment.Spec.Replicas),
+			zap.Any("replicas", replicaValue),
 		)
 		return nil
 	}
@@ -202,7 +207,7 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 
 	// 生成 Route ID 和域名
 	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
-	routeID := fmt.Sprintf("k8s-%s-%s", deployment.Namespace, deployment.Name)
+	routeID := router.BuildRouteID(deployment.Namespace, deployment.Name)
 	domain := fmt.Sprintf("%s.%s", deployment.Name, h.baseDomain)
 
 	// 调用 Admin API 创建路由
@@ -231,9 +236,9 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 
 	// 写回注解到 Deployment
 	annotations := map[string]string{
-		k8s.AnnotationURL:      domain,
-		k8s.AnnotationSynced:   time.Now().Format(time.RFC3339),
-		k8s.AnnotationRouteID:  routeID,
+		k8s.AnnotationURL:     domain,
+		k8s.AnnotationSynced:  time.Now().Format(time.RFC3339),
+		k8s.AnnotationRouteID: routeID,
 	}
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)

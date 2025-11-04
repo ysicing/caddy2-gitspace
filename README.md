@@ -136,7 +136,7 @@ spec:
    annotations:
      gitspace.caddy.route.url: "vscode.example.com"
      gitspace.caddy.route.synced-at: "2025-01-08T10:30:00Z"
-     gitspace.caddy.route.id: "k8s-default-vscode"
+    gitspace.caddy.route.id: "k8s:default:vscode"
    ```
 
 ### 访问应用
