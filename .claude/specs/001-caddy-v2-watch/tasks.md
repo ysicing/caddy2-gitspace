@@ -10,15 +10,15 @@
    → 项目结构：单一项目，按功能模块组织
 2. 已加载设计文档：
    → research.md：10 个技术决策
-   → data-model.md：5 个核心实体
+   → data-model.md：Config、RouteIDTracker 模型
    → contracts/watcher.md：Watcher 接口契约
-   → contracts/route-manager.md：RouteManager 接口契约
+   → contracts/admin-api-client.md：AdminAPIClient 接口契约
    → quickstart.md：8 个部署步骤、5 个验收场景
 3. 按类别生成任务：
    → 设置：Go 模块、项目结构、依赖
    → 测试：契约测试、集成测试
-   → 核心：配置、Watcher、RouteManager
-   → 集成：Caddy 模块注册、事件连接
+   → 核心：配置、Watcher、AdminAPIClient、RouteIDTracker
+   → 集成：事件连接、注解写回
    → 优化：性能测试、文档、部署
 4. 应用任务规则：
    → 不同模块/文件 = 标记 [P] 表示可并行
@@ -171,15 +171,16 @@
 
 ---
 
-### T007 [P] 编写 RouteManager 接口契约测试
-**文件**：`tests/unit/manager_test.go`
+### T007 [P] 编写 AdminAPIClient 接口契约测试
+**文件**：`tests/unit/admin_client_test.go`
 **操作**：
-- 基于 `contracts/route-manager.md` 编写测试：
-  - 测试 1-6：AddRoute、GetRouteByDomain、DeleteRoute
-  - 测试 7-8：ServeHTTP（路由存在/不存在）
-  - 测试 9：ListRoutes
-  - 测试 10：并发读写路由表
-  - 错误场景：无效参数、目标不可达
+- 基于 `contracts/admin-api-client.md` 编写测试：
+  - 测试 1-2：CreateRoute（成功、覆盖现有）
+  - 测试 3-4：DeleteRoute（成功、幂等性）
+  - 测试 5-6：GetRoute、ListRoutes
+  - 测试 8-9：并发调用测试
+  - 错误场景：无效参数、API 不可达、5xx 错误
+- 使用 httptest 模拟 Caddy Admin API
 **验收**：测试编译成功，运行时全部失败
 
 ---
@@ -254,11 +255,13 @@
 - 定义 Config 结构体：
   ```go
   type Config struct {
-      Namespace    string `json:"namespace"`
-      BaseDomain   string `json:"base_domain"`
-      DefaultPort  int    `json:"default_port,omitempty"`
-      KubeConfig   string `json:"kubeconfig,omitempty"`
-      ResyncPeriod string `json:"resync_period,omitempty"`
+      Namespace       string `json:"namespace"`
+      BaseDomain      string `json:"base_domain"`
+      DefaultPort     int    `json:"default_port,omitempty"`
+      KubeConfig      string `json:"kubeconfig,omitempty"`
+      ResyncPeriod    string `json:"resync_period,omitempty"`
+      CaddyAdminURL   string `json:"caddy_admin_url,omitempty"`
+      CaddyServerName string `json:"caddy_server_name,omitempty"`
   }
   ```
 - 实现 Validate() 方法验证配置
@@ -277,6 +280,7 @@
       AnnotationPort   = "gitspace.caddy.default.port"
       AnnotationURL    = "gitspace.caddy.route.url"
       AnnotationSynced = "gitspace.caddy.route.synced-at"
+      AnnotationRouteID = "gitspace.caddy.route.id"
   )
   ```
 - 定义辅助函数：
@@ -304,41 +308,47 @@
 
 ---
 
-### T016 [P] 实现路由表数据结构
-**文件**：`router/manager.go`（RouteTable 部分）
+### T016 [P] 实现 RouteIDTracker 数据结构
+**文件**：`router/tracker.go`
 **操作**：
-- 实现 RouteEntry 结构体
-- 实现 RouteTable 结构体：
+- 实现 RouteIDTracker 结构体：
   ```go
-  type RouteTable struct {
-      byDomain     map[string]*RouteEntry
-      byDeployment map[string]*RouteEntry
-      mu           sync.RWMutex
+  type RouteIDTracker struct {
+      // deploymentKey (namespace/name) → routeID
+      routes map[string]string
+      mu     sync.RWMutex
   }
   ```
 - 实现基本操作：
-  - `AddRoute(entry *RouteEntry) error`
-  - `DeleteRoute(deploymentKey string) error`
-  - `GetRouteByDomain(domain string) (*RouteEntry, bool)`
-  - `ListRoutes() []*RouteEntry`
+  - `Set(deploymentKey, routeID string)`：记录映射
+  - `Get(deploymentKey string) (routeID string, exists bool)`：查询 Route ID
+  - `Delete(deploymentKey string)`：删除映射
+  - `List() map[string]string`：列出所有映射（调试用）
 **依赖**：无
-**验收**：T007 部分测试通过（路由表操作）
+**验收**：单元测试通过（并发安全测试）
 
 ---
 
-### T017 实现 RouteManager HTTP handler
-**文件**：`router/handler.go`
+### T017 [P] 实现 AdminAPIClient
+**文件**：`router/admin_client.go`
 **操作**：
-- 实现 Caddy HTTP handler 接口：
+- 实现 AdminAPIClient 结构体：
   ```go
-  func (rm *RouteManager) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error
+  type AdminAPIClient struct {
+      baseURL    string       // http://localhost:2019
+      serverName string       // srv0
+      httpClient *http.Client
+  }
   ```
-- 实现反向代理逻辑：
-  1. 从请求 Host 头提取域名
-  2. 查找路由表获取目标 IP:Port
-  3. 反向代理到目标或调用 next handler
-**依赖**：T016
-**验收**：T007 ServeHTTP 测试通过
+- 实现接口方法：
+  - `CreateRoute(ctx, routeID, domain, targetIP string, targetPort int) error`
+  - `DeleteRoute(ctx, routeID string) error`
+  - `GetRoute(ctx, routeID string) (*RouteConfig, error)`（可选）
+  - `ListRoutes(ctx context.Context) ([]string, error)`（用于恢复 Tracker）
+- 实现参数验证（IP 格式、端口范围）
+- 实现错误处理（404 幂等、5xx 重试）
+**依赖**：无
+**验收**：T007 测试通过（基于 contracts/admin-api-client.md）
 
 ---
 
@@ -416,83 +426,96 @@
 
 ## 阶段 3.4：集成 (T022-T025)
 
-### T022 实现 Caddy 模块注册和配置
-**文件**：`router/config.go`
-**操作**：
-- 实现 Caddy Module 接口：
-  ```go
-  func (K8sRouter) CaddyModule() caddy.ModuleInfo {
-      return caddy.ModuleInfo{
-          ID:  "http.handlers.k8s_router",
-          New: func() caddy.Module { return new(K8sRouter) },
-      }
-  }
-  ```
-- 实现 Provision 接口加载配置
-- 实现 Validate 接口验证配置
-**依赖**：T013、T016
-**验收**：Caddy 模块注册成功
-
----
-
-### T023 实现 EventHandler 连接 Watcher 和 RouteManager
+### T022 实现 EventHandler 连接 Watcher 和 AdminAPIClient
 **文件**：`main.go`（EventHandler 实现）
 **操作**：
 - 实现 EventHandler 接口：
   ```go
   type K8sEventHandler struct {
-      routeManager *router.RouteManager
+      adminClient  *router.AdminAPIClient
+      tracker      *router.RouteIDTracker
       k8sClient    kubernetes.Interface
       namespace    string
       baseDomain   string
+      defaultPort  int
   }
   ```
 - 实现所有事件处理方法：
-  - OnDeploymentAdd：创建路由 + 写回注解
-  - OnDeploymentUpdate：检查副本数变化
-  - OnDeploymentDelete：删除路由
-  - OnPodUpdate：更新路由（Pod IP 变化）
-**依赖**：T020、T021、T017、T015
+  - OnDeploymentAdd：生成 Route ID → 调用 Admin API 创建路由 → 记录到 Tracker → 写回注解
+  - OnDeploymentUpdate：检查副本数变化 → 如果为 0 则删除路由
+  - OnDeploymentDelete：查询 Tracker 获取 Route ID → 调用 Admin API 删除路由 → 清理 Tracker
+  - OnPodUpdate：检测 IP 变化 → 删除旧路由 + 创建新路由
+**依赖**：T020、T021、T017、T016、T015
 **验收**：事件正确触发路由操作
 
 ---
 
-### T024 实现主入口和 Caddy 模块初始化
+### T023 实现主入口和初始化
 **文件**：`main.go`
 **操作**：
-- 创建 K8sRouter 结构体：
+- 创建主程序结构体：
   ```go
-  type K8sRouter struct {
+  type K8sWatcherApp struct {
       Config       *config.Config
-      RouteManager *router.RouteManager
+      AdminClient  *router.AdminAPIClient
+      Tracker      *router.RouteIDTracker
       Watcher      *k8s.Watcher
       ctx          context.Context
       cancel       context.CancelFunc
   }
   ```
-- 实现 Provision：
-  1. 初始化 Kubernetes client
-  2. 创建 RouteManager
-  3. 创建 Watcher 和 EventHandler
-  4. 启动 Watcher（在 goroutine 中）
-- 实现 Cleanup：优雅关闭 Watcher
-**依赖**：T022、T023
-**验收**：Caddy 启动成功，扩展已加载
+- 实现 main() 函数：
+  1. 加载配置
+  2. 初始化 Kubernetes client
+  3. 创建 AdminAPIClient
+  4. 创建 RouteIDTracker
+  5. 创建 Watcher 和 EventHandler
+  6. 启动 Watcher（在 goroutine 中）
+  7. 等待信号（优雅关闭）
+**依赖**：T022
+**验收**：程序启动成功，扩展已加载
+
+---
+
+### T024 实现启动时 Tracker 恢复逻辑
+**文件**：`main.go`（启动恢复部分）
+**操作**：
+- 在启动时查询 Caddy Admin API 获取所有 k8s-* 路由：
+  ```go
+  func (app *K8sWatcherApp) RecoverTracker(ctx context.Context) error {
+      routeIDs, err := app.AdminClient.ListRoutes(ctx)
+      if err != nil {
+          return err
+      }
+
+      // 解析 Route ID 恢复 Deployment Key
+      for _, routeID := range routeIDs {
+          if strings.HasPrefix(routeID, "k8s-") {
+              deploymentKey := parseDeploymentKeyFromRouteID(routeID)
+              app.Tracker.Set(deploymentKey, routeID)
+          }
+      }
+      return nil
+  }
+  ```
+**依赖**：T023、T017
+**验收**：重启后 Tracker 状态正确恢复
 
 ---
 
 ### T025 实现注解写回逻辑
-**文件**：已在 T023 的 EventHandler 中实现
+**文件**：已在 T022 的 EventHandler 中实现
 **操作**：
 - 在路由创建成功后，调用 PatchDeploymentAnnotation：
   ```go
   annotations := map[string]string{
-      k8s.AnnotationURL:    domain,
-      k8s.AnnotationSynced: time.Now().Format(time.RFC3339),
+      k8s.AnnotationURL:      domain,
+      k8s.AnnotationSynced:   time.Now().Format(time.RFC3339),
+      k8s.AnnotationRouteID:  routeID,
   }
   k8s.PatchDeploymentAnnotation(client, namespace, name, annotations)
   ```
-**依赖**：T015、T023
+**依赖**：T015、T022
 **验收**：Deployment 注解已正确写回
 
 ---
@@ -591,24 +614,24 @@
 - T014：无依赖 [P]
 - T015：依赖 T014
 - T016：无依赖 [P]
-- T017：依赖 T016
+- T017：无依赖 [P]
 - T018：依赖 T015
 - T019：依赖 T018
 - T020：依赖 T019、T014
 - T021：依赖 T020
 
 **集成阶段**：
-- T022：依赖 T013、T016
-- T023：依赖 T020、T021、T017、T015
-- T024：依赖 T022、T023
-- T025：依赖 T015、T023
+- T022：依赖 T020、T021、T017、T016、T015
+- T023：依赖 T022
+- T024：依赖 T023、T017
+- T025：依赖 T015、T022
 
 **优化阶段**：
-- T026：依赖 T024 [P]
+- T026：依赖 T023 [P]
 - T027：无依赖 [P]
 - T028：无依赖 [P]
 - T029：无依赖 [P]
-- T030：依赖 T024、T027、T028
+- T030：依赖 T023、T027、T028
 
 ---
 
@@ -638,11 +661,12 @@ task T012 &  # 集成测试 5
 wait
 ```
 
-### 示例 3：核心实现第一波（T013、T014、T016）
+### 示例 3：核心实现第一波（T013、T014、T016、T017）
 ```bash
 task T013 &  # 配置模块
 task T014 &  # Kubernetes 类型定义
-task T016 &  # 路由表
+task T016 &  # RouteIDTracker
+task T017 &  # AdminAPIClient
 wait
 # 然后继续 T015（依赖 T014）
 ```
@@ -671,11 +695,12 @@ wait
 ## 验证清单
 
 - [x] 所有契约都有对应的测试（T006、T007）
-- [x] 所有实体都有模型任务（RouteEntry、RouteTable：T016）
+- [x] 所有实体都有模型任务（RouteIDTracker：T016、AdminAPIClient：T017）
 - [x] 所有测试都在实现之前（T005-T012 在 T013-T021 之前）
 - [x] 并行任务真正独立（已验证文件不冲突）
 - [x] 每个任务指定确切的文件路径（已包含）
 - [x] 没有任务修改与另一个 [P] 任务相同的文件（已验证）
+- [x] 架构已更新为 Admin API 模式（不维护路由表）
 
 ---
 
