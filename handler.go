@@ -198,39 +198,9 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
 	routeID := router.BuildRouteID(deployment.Name)
 	domain := fmt.Sprintf("%s.%s", deployment.Name, h.baseDomain)
+	targetAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, port)
 
-	// 幂等性检查: 检查路由是否已存在
-	routeInfo, exists := h.tracker.Get(deploymentKey)
-	if exists && routeInfo != nil {
-		expectedAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, port)
-
-		// 如果路由已存在且 target 一致,跳过创建
-		if routeInfo.TargetAddr == expectedAddr {
-			h.logger.Debug("Route already exists with same target, skipping creation",
-				zap.String("deployment", deployment.Name),
-				zap.String("route_id", routeInfo.RouteID),
-				zap.String("target", expectedAddr),
-			)
-			return nil
-		}
-
-		// Target 不一致,先删除旧路由再创建新路由
-		h.logger.Info("Route exists but target changed, recreating route",
-			zap.String("deployment", deployment.Name),
-			zap.String("route_id", routeInfo.RouteID),
-			zap.String("old_target", routeInfo.TargetAddr),
-			zap.String("new_target", expectedAddr),
-		)
-		if err := h.deleteRoute(deployment); err != nil {
-			h.logger.Error("Failed to delete old route before recreating",
-				zap.String("deployment", deployment.Name),
-				zap.Error(err),
-			)
-			return err
-		}
-	}
-
-	// 调用 Admin API 创建路由
+	// 调用 Admin API 创建路由（CreateRoute 已经是幂等的，会自动检查和处理重复）
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -245,13 +215,12 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 	}
 
 	// 记录到 Tracker（缓存 RouteID 和 TargetAddr）
-	targetAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, port)
 	h.tracker.Set(deploymentKey, routeID, targetAddr)
 
 	h.logger.Info("Route created",
 		zap.String("deployment", deployment.Name),
 		zap.String("domain", domain),
-		zap.String("target", fmt.Sprintf("%s:%d", pod.Status.PodIP, port)),
+		zap.String("target", targetAddr),
 	)
 
 	// 写回注解到 Deployment

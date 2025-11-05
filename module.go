@@ -218,7 +218,24 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 		}
 		cancel()
 
-		// Admin API 健康,尝试恢复
+		// Admin API 健康,先清理重复路由
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+		deletedCount, err := kr.adminClient.CleanupDuplicateRoutes(ctx2)
+		cancel2()
+
+		if err != nil {
+			kr.logger.Warn("Failed to cleanup duplicate routes",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			// 清理失败不阻塞恢复流程,继续尝试恢复
+		} else if deletedCount > 0 {
+			kr.logger.Info("Cleaned up duplicate routes",
+				zap.Int("deleted_count", deletedCount),
+			)
+		}
+
+		// 尝试恢复 Tracker
 		if err := kr.recoverTracker(); err != nil {
 			kr.logger.Warn("Failed to recover tracker",
 				zap.Int("attempt", attempt),
