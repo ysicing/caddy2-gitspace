@@ -17,8 +17,8 @@ func TestCreateRouteIdempotent(t *testing.T) {
 
 	// 模拟服务器
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// GET 请求 - 查询路由
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/routes/@id:") {
+		// GET 请求 - 查询路由（使用新的 /id/ 端点）
+		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/id/") {
 			getCallCount++
 
 			// 第一次调用返回 404（路由不存在）
@@ -29,7 +29,7 @@ func TestCreateRouteIdempotent(t *testing.T) {
 
 			// 第二次调用返回已存在的路由（配置一致）
 			existingRoute := map[string]any{
-				"@id": "gitspace::test-deployment",
+				"@id": "test-deployment",
 				"match": []map[string]any{
 					{"host": []string{"test-deployment.example.com"}},
 				},
@@ -69,7 +69,7 @@ func TestCreateRouteIdempotent(t *testing.T) {
 	ctx := context.Background()
 
 	// 第一次调用 - 路由不存在，应该创建
-	err := client.CreateRoute(ctx, "gitspace::test-deployment", "test-deployment.example.com", "10.0.0.1", 8080)
+	err := client.CreateRoute(ctx, "test-deployment", "test-deployment.example.com", "10.0.0.1", 8080)
 	if err != nil {
 		t.Fatalf("First CreateRoute failed: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCreateRouteIdempotent(t *testing.T) {
 	}
 
 	// 第二次调用 - 路由已存在且配置一致，应该跳过创建（幂等）
-	err = client.CreateRoute(ctx, "gitspace::test-deployment", "test-deployment.example.com", "10.0.0.1", 8080)
+	err = client.CreateRoute(ctx, "test-deployment", "test-deployment.example.com", "10.0.0.1", 8080)
 	if err != nil {
 		t.Fatalf("Second CreateRoute failed: %v", err)
 	}
@@ -102,10 +102,10 @@ func TestCreateRouteUpdateWhenChanged(t *testing.T) {
 
 	// 模拟服务器
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// GET 请求 - 返回旧配置的路由
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/routes/@id:") {
+		// GET 请求 - 返回旧配置的路由（使用新的 /id/ 端点）
+		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/id/") {
 			existingRoute := map[string]any{
-				"@id": "gitspace::test-deployment",
+				"@id": "test-deployment",
 				"match": []map[string]any{
 					{"host": []string{"test-deployment.example.com"}},
 				},
@@ -145,7 +145,7 @@ func TestCreateRouteUpdateWhenChanged(t *testing.T) {
 	ctx := context.Background()
 
 	// 调用 CreateRoute，但 IP 已变化
-	err := client.CreateRoute(ctx, "gitspace::test-deployment", "test-deployment.example.com", "10.0.0.2", 8080)
+	err := client.CreateRoute(ctx, "test-deployment", "test-deployment.example.com", "10.0.0.2", 8080)
 	if err != nil {
 		t.Fatalf("CreateRoute failed: %v", err)
 	}
@@ -165,10 +165,10 @@ func TestCreateRoutePreventsMultiplePOST(t *testing.T) {
 
 	// 模拟服务器 - 始终返回路由已存在
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// GET 请求 - 始终返回路由已存在
-		if r.Method == "GET" && strings.Contains(r.URL.Path, "/routes/@id:") {
+		// GET 请求 - 始终返回路由已存在（使用新的 /id/ 端点）
+		if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/id/") {
 			existingRoute := map[string]any{
-				"@id": "gitspace::test-deployment",
+				"@id": "test-deployment",
 				"match": []map[string]any{
 					{"host": []string{"test-deployment.example.com"}},
 				},
@@ -201,8 +201,8 @@ func TestCreateRoutePreventsMultiplePOST(t *testing.T) {
 	ctx := context.Background()
 
 	// 连续调用 10 次
-	for i := 0; i < 10; i++ {
-		err := client.CreateRoute(ctx, "gitspace::test-deployment", "test-deployment.example.com", "10.0.0.1", 8080)
+	for i := range 10 {
+		err := client.CreateRoute(ctx, "test-deployment", "test-deployment.example.com", "10.0.0.1", 8080)
 		if err != nil {
 			t.Fatalf("CreateRoute call %d failed: %v", i+1, err)
 		}

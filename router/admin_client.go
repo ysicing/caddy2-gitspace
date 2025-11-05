@@ -147,14 +147,14 @@ func (c *AdminAPIClient) CreateRoute(
 
 // DeleteRoute 通过 Admin API 删除路由
 // 如果路由不存在（404），不返回错误（幂等）
+// 使用 /id/{routeID} 端点直接删除配置
 func (c *AdminAPIClient) DeleteRoute(ctx context.Context, routeID string) error {
 	if routeID == "" {
 		return fmt.Errorf("routeID cannot be empty")
 	}
 
-	// 构造 URL（使用 @id: 前缀）
-	url := fmt.Sprintf("%s/config/apps/http/servers/%s/routes/@id:%s",
-		c.baseURL, c.serverName, routeID)
+	// 使用 /id/ 端点删除配置
+	url := fmt.Sprintf("%s/id/%s", c.baseURL, routeID)
 
 	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
 	if err != nil {
@@ -179,13 +179,14 @@ func (c *AdminAPIClient) DeleteRoute(ctx context.Context, routeID string) error 
 }
 
 // GetRoute 查询路由配置（可选，用于调试）
+// 使用 /id/{routeID} 端点直接访问配置
 func (c *AdminAPIClient) GetRoute(ctx context.Context, routeID string) (*RouteConfig, error) {
 	if routeID == "" {
 		return nil, fmt.Errorf("routeID cannot be empty")
 	}
 
-	url := fmt.Sprintf("%s/config/apps/http/servers/%s/routes/@id:%s",
-		c.baseURL, c.serverName, routeID)
+	// 使用 /id/ 端点访问配置
+	url := fmt.Sprintf("%s/id/%s", c.baseURL, routeID)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -362,7 +363,7 @@ func (c *AdminAPIClient) CleanupDuplicateRoutes(ctx context.Context) (int, error
 		if count > 1 {
 			// 删除所有该 ID 的路由(因为无法区分哪个是"正确"的)
 			// 之后会通过对账或事件重建正确的路由
-			for i := 0; i < count; i++ {
+			for range count {
 				if err := c.DeleteRoute(ctx, id); err != nil {
 					// 记录错误但继续清理其他重复项
 					return duplicateCount, fmt.Errorf("failed to delete duplicate route %s: %w", id, err)
