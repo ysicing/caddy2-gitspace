@@ -32,12 +32,22 @@ func NewAdminAPIClient(baseURL, serverName string) *AdminAPIClient {
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		serverName: serverName,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			// 移除全局超时,使用 context 控制每个请求的超时
+			// Timeout: 5 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
 				IdleConnTimeout:     30 * time.Second,
 				DisableKeepAlives:   false,
 				MaxIdleConnsPerHost: 5,
+				// 添加连接超时,避免连接建立阶段阻塞
+				DialContext: (&net.Dialer{
+					Timeout:   2 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				// 添加 TLS 握手超时
+				TLSHandshakeTimeout: 2 * time.Second,
+				// 添加响应头超时
+				ResponseHeaderTimeout: 5 * time.Second,
 			},
 		},
 	}

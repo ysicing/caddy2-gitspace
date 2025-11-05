@@ -177,10 +177,11 @@ func (kr *K8sRouter) Stop() error {
 // recoverTrackerWithRetry 带重试机制的异步恢复 Tracker
 func (kr *K8sRouter) recoverTrackerWithRetry() {
 	const (
-		maxRetries     = 5
-		initialDelay   = 2 * time.Second
-		maxDelay       = 30 * time.Second
-		healthCheckURL = "/config/"
+		maxRetries        = 5
+		initialDelay      = 2 * time.Second
+		maxDelay          = 30 * time.Second
+		healthCheckURL    = "/config/"
+		healthCheckTimeout = 2 * time.Second // 快速健康检查,避免阻塞
 	)
 
 	kr.logger.Info("Starting delayed tracker recovery...")
@@ -195,8 +196,8 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 			zap.Int("max_retries", maxRetries),
 		)
 
-		// 健康检查:先测试 Admin API 是否可访问
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// 健康检查:先测试 Admin API 是否可访问(使用短超时快速失败)
+		ctx, cancel := context.WithTimeout(context.Background(), healthCheckTimeout)
 		if err := kr.adminClient.HealthCheck(ctx, healthCheckURL); err != nil {
 			cancel()
 			kr.logger.Warn("Admin API health check failed",
