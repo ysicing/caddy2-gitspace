@@ -273,3 +273,27 @@ func (c *AdminAPIClient) ListRoutes(ctx context.Context) ([]*RouteConfig, error)
 
 	return configs, nil
 }
+
+// HealthCheck 检查 Caddy Admin API 是否可访问
+func (c *AdminAPIClient) HealthCheck(ctx context.Context, endpoint string) error {
+	url := fmt.Sprintf("%s%s", c.baseURL, endpoint)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("Admin API unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 只要能返回响应就认为健康(即使是 404)
+	if resp.StatusCode == 404 || (resp.StatusCode >= 200 && resp.StatusCode < 500) {
+		return nil
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("Admin API returned error: %d - %s", resp.StatusCode, string(body))
+}

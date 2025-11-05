@@ -109,11 +109,8 @@ func (kr *K8sRouter) Start() error {
 	// 3. 创建 RouteIDTracker
 	kr.tracker = router.NewRouteIDTracker()
 
-	// 4. 恢复 Tracker（从 Caddy 查询现有路由）
-	if err := kr.recoverTracker(); err != nil {
-		kr.logger.Warn("Failed to recover tracker", zap.Error(err))
-		// 不返回错误，继续启动
-	}
+	// 4. 延迟恢复 Tracker（等待 Caddy Admin API 启动完成）
+	go kr.recoverTrackerWithRetry()
 
 	// 5. 创建 EventHandler
 	eventHandler := NewEventHandler(
@@ -175,6 +172,79 @@ func (kr *K8sRouter) Stop() error {
 
 	kr.logger.Info("K8s router stopped")
 	return nil
+}
+
+// recoverTrackerWithRetry 带重试机制的异步恢复 Tracker
+func (kr *K8sRouter) recoverTrackerWithRetry() {
+	const (
+		maxRetries     = 5
+		initialDelay   = 2 * time.Second
+		maxDelay       = 30 * time.Second
+		healthCheckURL = "/config/"
+	)
+
+	kr.logger.Info("Starting delayed tracker recovery...")
+
+	// 首次延迟,等待 Caddy Admin API 启动
+	time.Sleep(initialDelay)
+
+	delay := initialDelay
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		kr.logger.Info("Attempting to recover tracker",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+		)
+
+		// 健康检查:先测试 Admin API 是否可访问
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := kr.adminClient.HealthCheck(ctx, healthCheckURL); err != nil {
+			cancel()
+			kr.logger.Warn("Admin API health check failed",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+				zap.Duration("retry_after", delay),
+			)
+
+			if attempt < maxRetries {
+				time.Sleep(delay)
+				// 指数退避,但不超过 maxDelay
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+			continue
+		}
+		cancel()
+
+		// Admin API 健康,尝试恢复
+		if err := kr.recoverTracker(); err != nil {
+			kr.logger.Warn("Failed to recover tracker",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+
+			if attempt < maxRetries {
+				time.Sleep(delay)
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+			continue
+		}
+
+		// 恢复成功
+		kr.logger.Info("Tracker recovery completed successfully",
+			zap.Int("attempt", attempt),
+		)
+		return
+	}
+
+	// 所有重试都失败
+	kr.logger.Error("Failed to recover tracker after all retries",
+		zap.Int("max_retries", maxRetries),
+	)
 }
 
 // recoverTracker 从 Caddy Admin API 恢复 RouteIDTracker
