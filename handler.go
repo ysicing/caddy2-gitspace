@@ -183,21 +183,33 @@ func (h *EventHandler) OnDeploymentDelete(deployment *appsv1.Deployment) error {
 
 // createRoute 创建路由
 func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Pod) error {
+	// 从 deployment labels 获取稳定的 gitspace identifier
+	// 注意：使用 gitspaceIdentifier 而不是 deployment.Name
+	// 这是因为 deployment name 可能包含实例后缀，不稳定
+	gitspaceIdentifier := k8s.GetGitspaceIdentifier(deployment)
+	if gitspaceIdentifier == "" {
+		h.logger.Error("Failed to get gitspace identifier from deployment",
+			zap.String("deployment", deployment.Name),
+		)
+		return fmt.Errorf("missing gitspace identifier for deployment %s", deployment.Name)
+	}
+
 	// 读取端口注解
 	port, err := k8s.GetPortFromAnnotation(deployment.Annotations, h.defaultPort)
 	if err != nil {
 		h.logger.Warn("Invalid port annotation, using default",
 			zap.String("deployment", deployment.Name),
+			zap.String("gitspace_identifier", gitspaceIdentifier),
 			zap.Int("default_port", h.defaultPort),
 			zap.Error(err),
 		)
 		port = h.defaultPort
 	}
 
-	// 生成 Route ID 和域名
+	// 生成 Route ID 和域名（使用 gitspaceIdentifier）
 	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
-	routeID := router.BuildRouteID(deployment.Name)
-	domain := fmt.Sprintf("%s.%s", deployment.Name, h.baseDomain)
+	routeID := router.BuildRouteID(gitspaceIdentifier)
+	domain := fmt.Sprintf("%s.%s", gitspaceIdentifier, h.baseDomain)
 	targetAddr := fmt.Sprintf("%s:%d", pod.Status.PodIP, port)
 
 	// 调用 Admin API 创建路由（CreateRoute 已经是幂等的，会自动检查和处理重复）
@@ -207,6 +219,7 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 	if err := h.adminClient.CreateRoute(ctx, routeID, domain, pod.Status.PodIP, port); err != nil {
 		h.logger.Error("Failed to create route",
 			zap.String("deployment", deployment.Name),
+			zap.String("gitspace_identifier", gitspaceIdentifier),
 			zap.String("route_id", routeID),
 			zap.String("domain", domain),
 			zap.Error(err),
@@ -219,6 +232,7 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 
 	h.logger.Info("Route created",
 		zap.String("deployment", deployment.Name),
+		zap.String("gitspace_identifier", gitspaceIdentifier),
 		zap.String("domain", domain),
 		zap.String("target", targetAddr),
 	)
@@ -236,6 +250,7 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 	if err := k8s.PatchDeploymentAnnotation(ctx2, h.k8sClient, deployment.Namespace, deployment.Name, annotations); err != nil {
 		h.logger.Warn("Failed to patch deployment annotations",
 			zap.String("deployment", deployment.Name),
+			zap.String("gitspace_identifier", gitspaceIdentifier),
 			zap.Error(err),
 		)
 		// 不返回错误，因为路由已经创建成功
@@ -247,12 +262,14 @@ func (h *EventHandler) createRoute(deployment *appsv1.Deployment, pod *corev1.Po
 // deleteRoute 删除路由
 func (h *EventHandler) deleteRoute(deployment *appsv1.Deployment) error {
 	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
+	gitspaceIdentifier := k8s.GetGitspaceIdentifier(deployment)
 
 	// 从 Tracker 查找 Route 信息
 	routeInfo, exists := h.tracker.Get(deploymentKey)
 	if !exists || routeInfo == nil {
 		h.logger.Debug("No route to delete",
 			zap.String("deployment", deployment.Name),
+			zap.String("gitspace_identifier", gitspaceIdentifier),
 		)
 		return nil
 	}
@@ -264,6 +281,7 @@ func (h *EventHandler) deleteRoute(deployment *appsv1.Deployment) error {
 	if err := h.adminClient.DeleteRoute(ctx, routeInfo.RouteID); err != nil {
 		h.logger.Error("Failed to delete route",
 			zap.String("deployment", deployment.Name),
+			zap.String("gitspace_identifier", gitspaceIdentifier),
 			zap.String("route_id", routeInfo.RouteID),
 			zap.Error(err),
 		)
@@ -275,6 +293,7 @@ func (h *EventHandler) deleteRoute(deployment *appsv1.Deployment) error {
 
 	h.logger.Info("Route deleted",
 		zap.String("deployment", deployment.Name),
+		zap.String("gitspace_identifier", gitspaceIdentifier),
 		zap.String("route_id", routeInfo.RouteID),
 	)
 

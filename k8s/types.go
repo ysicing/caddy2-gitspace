@@ -61,3 +61,20 @@ func DesiredReplicaCount(deployment *appsv1.Deployment) int32 {
 	}
 	return *deployment.Spec.Replicas
 }
+
+// GetGitspaceIdentifier 从 Deployment labels 中提取 gitspace identifier
+// 这是稳定的配置级别标识符，不同于可能包含实例后缀的 deployment name
+// 如果 label 不存在，返回空字符串
+func GetGitspaceIdentifier(deployment *appsv1.Deployment) string {
+	if deployment == nil {
+		return ""
+	}
+
+	// 从 label 中获取 gitspace identifier
+	if identifier, exists := deployment.Labels["gitspace"]; exists && identifier != "" {
+		return identifier
+	}
+
+	// label 不存在，返回空字符串
+	return ""
+}
