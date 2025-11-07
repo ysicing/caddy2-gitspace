@@ -122,7 +122,9 @@ func (c *AdminAPIClient) CreateRoute(
 	}
 
 	// 发送 POST 请求
-	url := fmt.Sprintf("%s/config/apps/http/servers/%s/routes", c.baseURL, c.serverName)
+	// 关键修复：使用 /routes/0 将路由插入到最前面
+	// 这样可以确保具体路由在通配符 catch-all 路由之前被匹配
+	url := fmt.Sprintf("%s/config/apps/http/servers/%s/routes/0", c.baseURL, c.serverName)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)

@@ -47,8 +47,8 @@ func TestCreateRouteIdempotent(t *testing.T) {
 			return
 		}
 
-		// POST 请求 - 创建路由
-		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/routes") {
+		// POST 请求 - 创建路由（支持 /routes 和 /routes/0）
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/routes") {
 			postCallCount++
 			w.WriteHeader(http.StatusOK)
 			return
@@ -123,8 +123,8 @@ func TestCreateRouteUpdateWhenChanged(t *testing.T) {
 			return
 		}
 
-		// POST 请求 - 创建路由
-		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/routes") {
+		// POST 请求 - 创建路由（支持 /routes 和 /routes/0）
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/routes") {
 			postCallCount++
 			w.WriteHeader(http.StatusOK)
 			return
