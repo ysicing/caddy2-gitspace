@@ -11,9 +11,10 @@ import (
 // TestListRoutesDeduplication 测试 ListRoutes 的去重功能
 func TestListRoutesDeduplication(t *testing.T) {
 	// 模拟 Caddy Admin API 返回重复路由
+	// 使用新的 gitspace: 前缀格式
 	duplicatedRoutes := []map[string]any{
 		{
-			"@id": "test-deployment",
+			"@id": "gitspace:test-deployment",
 			"match": []map[string]any{
 				{"host": []string{"test-deployment.example.com"}},
 			},
@@ -27,7 +28,7 @@ func TestListRoutesDeduplication(t *testing.T) {
 			},
 		},
 		{
-			"@id": "test-deployment", // 重复的路由
+			"@id": "gitspace:test-deployment", // 重复的路由
 			"match": []map[string]any{
 				{"host": []string{"test-deployment.example.com"}},
 			},
@@ -41,7 +42,7 @@ func TestListRoutesDeduplication(t *testing.T) {
 			},
 		},
 		{
-			"@id": "test-deployment", // 再次重复
+			"@id": "gitspace:test-deployment", // 再次重复
 			"match": []map[string]any{
 				{"host": []string{"test-deployment.example.com"}},
 			},
@@ -55,7 +56,7 @@ func TestListRoutesDeduplication(t *testing.T) {
 			},
 		},
 		{
-			"@id": "another-deployment", // 不同的路由
+			"@id": "gitspace:another-deployment", // 不同的路由
 			"match": []map[string]any{
 				{"host": []string{"another-deployment.example.com"}},
 			},
@@ -104,7 +105,7 @@ func TestListRoutesDeduplication(t *testing.T) {
 		routeIDs[route.ID] = true
 	}
 
-	expectedIDs := []string{"test-deployment", "another-deployment"}
+	expectedIDs := []string{"gitspace:test-deployment", "gitspace:another-deployment"}
 	for _, expectedID := range expectedIDs {
 		if !routeIDs[expectedID] {
 			t.Errorf("Expected route ID %s not found in results", expectedID)
@@ -113,7 +114,7 @@ func TestListRoutesDeduplication(t *testing.T) {
 
 	// 验证重复的路由只保留最后一个配置
 	for _, route := range routes {
-		if route.ID == "test-deployment" {
+		if route.ID == "gitspace:test-deployment" {
 			// 应该保留最后一个配置（dial: 10.0.0.2:8080）
 			if route.TargetAddr != "10.0.0.2:8080" {
 				t.Errorf("Expected target address 10.0.0.2:8080, got %s", route.TargetAddr)
@@ -130,11 +131,12 @@ func TestCleanupDuplicateRoutes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 处理 GET 请求（列出路由）
 		if r.Method == "GET" && r.URL.Path == "/config/apps/http/servers/srv0/routes" {
+			// 使用新的 gitspace: 前缀格式
 			duplicatedRoutes := []map[string]any{
-				{"@id": "dup1"},
-				{"@id": "dup1"}, // 重复
-				{"@id": "dup1"}, // 重复
-				{"@id": "unique"},
+				{"@id": "gitspace:dup1"},
+				{"@id": "gitspace:dup1"}, // 重复
+				{"@id": "gitspace:dup1"}, // 重复
+				{"@id": "gitspace:unique"},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(duplicatedRoutes)

@@ -267,8 +267,7 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 
 // recoverTracker 从 Caddy Admin API 和 K8s 恢复 RouteIDTracker
 // 参考 gitness 的修复思路：不从 routeID 反推，而是通过 K8s Deployments 匹配
-// 注意：当前实现使用 deployment name 作为 routeID，未来如果切换到 gitspace identifier
-// 需要相应调整此函数
+// 使用 gitspace identifier（来自 deployment label）而不是 deployment name
 func (kr *K8sRouter) recoverTracker() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -291,15 +290,24 @@ func (kr *K8sRouter) recoverTracker() error {
 		return fmt.Errorf("failed to list deployments: %w", err)
 	}
 
-	// 3. 遍历 Deployments，通过 deployment name 匹配路由
-	// 当前版本：routeID = deployment.Name（直接使用，无前缀）
-	// 如果迁移到 gitspace identifier 模式：routeID = gitspace:identifier（带前缀）
+	// 3. 遍历 Deployments，使用 gitspace identifier 匹配路由
 	recoveredCount := 0
+	skippedCount := 0
 	for i := range deployments.Items {
 		deployment := &deployments.Items[i]
 
-		// 构造期望的 routeID（当前直接使用 deployment name）
-		routeID := router.BuildRouteID(deployment.Name)
+		// 从 deployment labels 获取 gitspace identifier
+		gitspaceIdentifier := k8s.GetGitspaceIdentifier(deployment)
+		if gitspaceIdentifier == "" {
+			kr.logger.Debug("Deployment missing gitspace identifier, skipping recovery",
+				zap.String("deployment", deployment.Name),
+			)
+			skippedCount++
+			continue
+		}
+
+		// 使用 gitspace identifier 构造期望的 routeID
+		routeID := router.BuildRouteID(gitspaceIdentifier)
 
 		// 检查 Caddy 中是否存在对应的路由
 		if route, exists := routeMap[routeID]; exists {
@@ -308,6 +316,7 @@ func (kr *K8sRouter) recoverTracker() error {
 			kr.logger.Info("Recovered route",
 				zap.String("route_id", route.ID),
 				zap.String("deployment", deployment.Name),
+				zap.String("gitspace_identifier", gitspaceIdentifier),
 				zap.String("deployment_key", deploymentKey),
 				zap.String("target_addr", route.TargetAddr),
 			)
@@ -318,6 +327,7 @@ func (kr *K8sRouter) recoverTracker() error {
 	kr.logger.Info("Tracker recovered",
 		zap.Int("total_routes", len(routes)),
 		zap.Int("recovered_mappings", recoveredCount),
+		zap.Int("skipped_deployments", skippedCount),
 	)
 
 	return nil
@@ -354,6 +364,9 @@ func (kr *K8sRouter) reconcileRoutesWithK8s() error {
 
 	// 构建期望的路由集合
 	expectedRoutes := make(map[string]bool)
+	// gitspaceIdentifierToDeploymentKey 映射，用于清理时查找 deploymentKey
+	gitspaceIdentifierToDeploymentKey := make(map[string]string)
+
 	for i := range deployments.Items {
 		deployment := &deployments.Items[i]
 
@@ -368,8 +381,21 @@ func (kr *K8sRouter) reconcileRoutesWithK8s() error {
 			continue
 		}
 
-		routeID := router.BuildRouteID(deployment.Name)
+		// 使用 gitspaceIdentifier 而不是 deployment.Name
+		gitspaceIdentifier := k8s.GetGitspaceIdentifier(deployment)
+		if gitspaceIdentifier == "" {
+			kr.logger.Warn("Deployment missing gitspace identifier, skipping",
+				zap.String("deployment", deployment.Name),
+			)
+			continue
+		}
+
+		routeID := router.BuildRouteID(gitspaceIdentifier)
 		expectedRoutes[routeID] = true
+
+		// 记录映射关系，用于后续清理 tracker
+		deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
+		gitspaceIdentifierToDeploymentKey[gitspaceIdentifier] = deploymentKey
 	}
 
 	// 3. 删除 Caddy 中存在但 K8s 中不存在的路由（清理孤立路由）
@@ -387,9 +413,14 @@ func (kr *K8sRouter) reconcileRoutesWithK8s() error {
 				)
 			} else {
 				// 从 tracker 中清理
-				name, _ := router.ParseRouteID(routeID)
-				deploymentKey := fmt.Sprintf("%s/%s", kr.config.Namespace, name)
-				kr.tracker.Delete(deploymentKey)
+				// 从 routeID 解析出 gitspaceIdentifier
+				gitspaceIdentifier, err := router.ParseRouteID(routeID)
+				if err == nil {
+					// 使用映射找到对应的 deploymentKey
+					if deploymentKey, exists := gitspaceIdentifierToDeploymentKey[gitspaceIdentifier]; exists {
+						kr.tracker.Delete(deploymentKey)
+					}
+				}
 				deletedCount++
 			}
 		}
