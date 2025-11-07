@@ -292,61 +292,151 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 
 // createBaseRoutes 创建基础路由（healthz 和 catch-all）
 // 这些路由在插件启动时创建，确保它们在路由列表的正确位置
-// 调用顺序：先创建 catch-all（追加到末尾），再创建 healthz（追加到末尾）
-// 这样最终顺序是：healthz, catch-all
-// 动态路由会通过 /routes/0 插入到最前面
+//
+// 关键修复：先删除 Caddyfile 可能创建的空 wildcard 路由
+// Caddy 会为空的 server block（只有 tls 指令）创建一个 terminal 空路由
+// 这个空路由会拦截所有请求，必须删除
+//
+// 幂等性：检查基础路由是否已存在，避免重复创建
 func (kr *K8sRouter) createBaseRoutes(ctx context.Context) error {
 	kr.logger.Info("Creating base routes...")
 
 	serverPath := fmt.Sprintf("%s/config/apps/http/servers/%s/routes",
 		kr.config.CaddyAdminURL, kr.config.CaddyServerName)
 
-	// 1. 创建 catch-all 404 路由（追加到末尾）
-	catchAllRoute := map[string]any{
-		"@id": "__catch_all__",
-		"match": []map[string]any{
-			{"host": []string{fmt.Sprintf("*.%s", kr.config.BaseDomain)}},
-		},
-		"handle": []map[string]any{
-			{
-				"handler": "static_response",
-				"status_code": 404,
-				"body": "Caddy K8s Router - No matching deployment",
+	// 0. 检查基础路由是否已存在（幂等性）
+	routes, err := kr.adminClient.ListRoutes(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list routes for idempotency check: %w", err)
+	}
+
+	hasHealthz := false
+	hasCatchAll := false
+	for _, route := range routes {
+		if route.ID == "__healthz__" {
+			hasHealthz = true
+		}
+		if route.ID == "__catch_all__" {
+			hasCatchAll = true
+		}
+	}
+
+	if hasHealthz && hasCatchAll {
+		kr.logger.Info("Base routes already exist, skipping creation")
+		return nil
+	}
+
+	// 1. 删除 Caddyfile 创建的空 wildcard 路由（如果存在）
+	// Caddyfile 的 *.domain.com { tls {...} } 会创建一个空路由：
+	// { "match": [{"host": ["*.domain.com"]}], "terminal": true }
+	// 这个空路由没有 handle，但会拦截所有请求
+	if err := kr.removeEmptyWildcardRoute(ctx); err != nil {
+		kr.logger.Warn("Failed to remove empty wildcard route (may not exist)",
+			zap.Error(err),
+		)
+		// 不阻塞，继续创建基础路由
+	}
+
+	// 2. 创建 catch-all 404 路由（如果不存在）
+	if !hasCatchAll {
+		catchAllRoute := map[string]any{
+			"@id": "__catch_all__",
+			"match": []map[string]any{
+				{"host": []string{fmt.Sprintf("*.%s", kr.config.BaseDomain)}},
 			},
-		},
-		"terminal": true,
-	}
-
-	if err := kr.postRouteToPath(ctx, serverPath, catchAllRoute); err != nil {
-		return fmt.Errorf("failed to create catch-all route: %w", err)
-	}
-	kr.logger.Info("Created catch-all route")
-
-	// 2. 创建 /healthz 路由（追加到末尾）
-	healthzRoute := map[string]any{
-		"@id": "__healthz__",
-		"match": []map[string]any{
-			{"host": []string{fmt.Sprintf("*.%s", kr.config.BaseDomain)}},
-			{"path": []string{"/healthz"}},
-		},
-		"handle": []map[string]any{
-			{
-				"handler": "static_response",
-				"status_code": 200,
-				"body": "OK",
+			"handle": []map[string]any{
+				{
+					"handler": "static_response",
+					"status_code": 404,
+					"body": "Caddy K8s Router - No matching deployment",
+				},
 			},
-		},
+			"terminal": true,
+		}
+
+		if err := kr.postRouteToPath(ctx, serverPath, catchAllRoute); err != nil {
+			return fmt.Errorf("failed to create catch-all route: %w", err)
+		}
+		kr.logger.Info("Created catch-all route")
+	} else {
+		kr.logger.Info("Catch-all route already exists, skipping")
 	}
 
-	if err := kr.postRouteToPath(ctx, serverPath, healthzRoute); err != nil {
-		return fmt.Errorf("failed to create healthz route: %w", err)
+	// 3. 创建 /healthz 路由（如果不存在）
+	if !hasHealthz {
+		healthzRoute := map[string]any{
+			"@id": "__healthz__",
+			"match": []map[string]any{
+				{"host": []string{fmt.Sprintf("*.%s", kr.config.BaseDomain)}},
+				{"path": []string{"/healthz"}},
+			},
+			"handle": []map[string]any{
+				{
+					"handler": "static_response",
+					"status_code": 200,
+					"body": "OK",
+				},
+			},
+		}
+
+		if err := kr.postRouteToPath(ctx, serverPath, healthzRoute); err != nil {
+			return fmt.Errorf("failed to create healthz route: %w", err)
+		}
+		kr.logger.Info("Created healthz route")
+	} else {
+		kr.logger.Info("Healthz route already exists, skipping")
 	}
-	kr.logger.Info("Created healthz route")
 
-	kr.logger.Info("Base routes created successfully",
-		zap.String("order", "healthz (index 1), catch-all (index 0)"),
-	)
+	kr.logger.Info("Base routes setup completed")
 
+	return nil
+}
+
+// removeEmptyWildcardRoute 删除 Caddyfile 创建的空 wildcard 路由
+// Caddyfile 的 *.domain.com { tls {...} } 会创建一个空路由
+// 这个路由没有 @id，match 包含 wildcard，terminal:true，但没有 handle
+func (kr *K8sRouter) removeEmptyWildcardRoute(ctx context.Context) error {
+	routes, err := kr.adminClient.ListRoutes(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list routes: %w", err)
+	}
+
+	serverPath := fmt.Sprintf("%s/config/apps/http/servers/%s/routes",
+		kr.config.CaddyAdminURL, kr.config.CaddyServerName)
+
+	// 查找并删除空 wildcard 路由
+	// 特征：没有 @id，domain 是 wildcard，没有 TargetAddr（说明没有 reverse_proxy handler）
+	for i, route := range routes {
+		// 没有 ID 且 domain 匹配 wildcard 且没有 TargetAddr
+		if route.ID == "" &&
+		   route.Domain == fmt.Sprintf("*.%s", kr.config.BaseDomain) &&
+		   route.TargetAddr == "" {
+			// 通过索引删除（因为没有 @id）
+			deleteURL := fmt.Sprintf("%s/%d", serverPath, i)
+			req, err := http.NewRequestWithContext(ctx, "DELETE", deleteURL, nil)
+			if err != nil {
+				return fmt.Errorf("failed to create delete request: %w", err)
+			}
+
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				return fmt.Errorf("failed to delete empty route: %w", err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				kr.logger.Info("Removed empty wildcard route from Caddyfile",
+					zap.Int("index", i),
+					zap.String("domain", route.Domain),
+				)
+				return nil
+			}
+		}
+	}
+
+	// 没有找到空路由，这是正常的（如果 Caddyfile 已经更新）
+	kr.logger.Debug("No empty wildcard route found (this is normal)")
 	return nil
 }
 
