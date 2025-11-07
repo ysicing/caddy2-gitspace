@@ -265,35 +265,59 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 	)
 }
 
-// recoverTracker 从 Caddy Admin API 恢复 RouteIDTracker
+// recoverTracker 从 Caddy Admin API 和 K8s 恢复 RouteIDTracker
+// 参考 gitness 的修复思路：不从 routeID 反推，而是通过 K8s Deployments 匹配
+// 注意：当前实现使用 deployment name 作为 routeID，未来如果切换到 gitspace identifier
+// 需要相应调整此函数
 func (kr *K8sRouter) recoverTracker() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// 1. 从 Caddy 获取所有路由
 	routes, err := kr.adminClient.ListRoutes(ctx)
 	if err != nil {
 		return err
 	}
 
-	// 从 routeID 反推 deploymentKey，并缓存 TargetAddr
+	// 构建 routeID -> route 映射
+	routeMap := make(map[string]*router.RouteConfig)
 	for _, route := range routes {
-		name, err := router.ParseRouteID(route.ID)
-		if err != nil {
-			kr.logger.Warn("Skipping route with unrecognized id", zap.String("route_id", route.ID), zap.Error(err))
-			continue
-		}
+		routeMap[route.ID] = route
+	}
 
-		deploymentKey := fmt.Sprintf("%s/%s", kr.config.Namespace, name)
-		kr.tracker.Set(deploymentKey, route.ID, route.TargetAddr)
-		kr.logger.Info("Recovered route",
-			zap.String("route_id", route.ID),
-			zap.String("deployment_key", deploymentKey),
-			zap.String("target_addr", route.TargetAddr),
-		)
+	// 2. 从 K8s 获取所有 Deployments
+	deployments, err := kr.k8sClient.AppsV1().Deployments(kr.config.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to list deployments: %w", err)
+	}
+
+	// 3. 遍历 Deployments，通过 deployment name 匹配路由
+	// 当前版本：routeID = deployment.Name（直接使用，无前缀）
+	// 如果迁移到 gitspace identifier 模式：routeID = gitspace:identifier（带前缀）
+	recoveredCount := 0
+	for i := range deployments.Items {
+		deployment := &deployments.Items[i]
+
+		// 构造期望的 routeID（当前直接使用 deployment name）
+		routeID := router.BuildRouteID(deployment.Name)
+
+		// 检查 Caddy 中是否存在对应的路由
+		if route, exists := routeMap[routeID]; exists {
+			deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
+			kr.tracker.Set(deploymentKey, route.ID, route.TargetAddr)
+			kr.logger.Info("Recovered route",
+				zap.String("route_id", route.ID),
+				zap.String("deployment", deployment.Name),
+				zap.String("deployment_key", deploymentKey),
+				zap.String("target_addr", route.TargetAddr),
+			)
+			recoveredCount++
+		}
 	}
 
 	kr.logger.Info("Tracker recovered",
-		zap.Int("routes", len(routes)),
+		zap.Int("total_routes", len(routes)),
+		zap.Int("recovered_mappings", recoveredCount),
 	)
 
 	return nil
