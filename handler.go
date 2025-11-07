@@ -3,6 +3,7 @@ package caddy2k8s
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,6 +26,10 @@ type EventHandler struct {
 	baseDomain  string
 	defaultPort int
 	logger      *zap.Logger
+
+	// 并发控制：为每个 deployment 维护独立的互斥锁
+	// 防止并发事件触发重复的路由创建
+	deploymentLocks sync.Map // key: deploymentKey (namespace/name), value: *sync.Mutex
 }
 
 // NewEventHandler 创建新的 EventHandler
@@ -48,8 +53,20 @@ func NewEventHandler(
 	}
 }
 
+// getDeploymentLock 获取或创建 deployment 专用的互斥锁
+func (h *EventHandler) getDeploymentLock(deploymentKey string) *sync.Mutex {
+	lock, _ := h.deploymentLocks.LoadOrStore(deploymentKey, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
 // OnDeploymentAdd 处理 Deployment 创建事件
 func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
+	// 获取 deployment 专用锁，防止并发处理
+	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
+	lock := h.getDeploymentLock(deploymentKey)
+	lock.Lock()
+	defer lock.Unlock()
+
 	// 只处理单副本 Deployment
 	replicas := k8s.DesiredReplicaCount(deployment)
 	if replicas != 1 {
@@ -91,6 +108,12 @@ func (h *EventHandler) OnDeploymentAdd(deployment *appsv1.Deployment) error {
 
 // OnDeploymentUpdate 处理 Deployment 更新事件
 func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.Deployment) error {
+	// 获取 deployment 专用锁，防止并发处理
+	deploymentKey := fmt.Sprintf("%s/%s", newDeployment.Namespace, newDeployment.Name)
+	lock := h.getDeploymentLock(deploymentKey)
+	lock.Lock()
+	defer lock.Unlock()
+
 	oldReplicas := k8s.DesiredReplicaCount(oldDeployment)
 	newReplicas := k8s.DesiredReplicaCount(newDeployment)
 
@@ -178,6 +201,15 @@ func (h *EventHandler) OnDeploymentUpdate(oldDeployment, newDeployment *appsv1.D
 
 // OnDeploymentDelete 处理 Deployment 删除事件
 func (h *EventHandler) OnDeploymentDelete(deployment *appsv1.Deployment) error {
+	// 获取 deployment 专用锁，防止并发处理
+	deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
+	lock := h.getDeploymentLock(deploymentKey)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// 删除后清理锁（可选优化）
+	defer h.deploymentLocks.Delete(deploymentKey)
+
 	return h.deleteRoute(deployment)
 }
 
