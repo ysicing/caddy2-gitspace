@@ -1,10 +1,13 @@
 package caddy2k8s
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -236,6 +239,27 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 			)
 		}
 
+		// 创建基础路由（healthz 和 catch-all）
+		// 这些路由在插件启动时创建，确保它们在正确的位置
+		ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := kr.createBaseRoutes(ctx3); err != nil {
+			cancel3()
+			kr.logger.Warn("Failed to create base routes",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			// 基础路由创建失败,重试
+			if attempt < maxRetries {
+				time.Sleep(delay)
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			}
+			continue
+		}
+		cancel3()
+
 		// 尝试恢复 Tracker
 		if err := kr.recoverTracker(); err != nil {
 			kr.logger.Warn("Failed to recover tracker",
@@ -266,14 +290,103 @@ func (kr *K8sRouter) recoverTrackerWithRetry() {
 	)
 }
 
+// createBaseRoutes 创建基础路由（healthz 和 catch-all）
+// 这些路由在插件启动时创建，确保它们在路由列表的正确位置
+// 调用顺序：先创建 catch-all（追加到末尾），再创建 healthz（追加到末尾）
+// 这样最终顺序是：healthz, catch-all
+// 动态路由会通过 /routes/0 插入到最前面
+func (kr *K8sRouter) createBaseRoutes(ctx context.Context) error {
+	kr.logger.Info("Creating base routes...")
+
+	serverPath := fmt.Sprintf("%s/config/apps/http/servers/%s/routes",
+		kr.config.CaddyAdminURL, kr.config.CaddyServerName)
+
+	// 1. 创建 catch-all 404 路由（追加到末尾）
+	catchAllRoute := map[string]any{
+		"@id": "__catch_all__",
+		"match": []map[string]any{
+			{"host": []string{fmt.Sprintf("*.%s", kr.config.BaseDomain)}},
+		},
+		"handle": []map[string]any{
+			{
+				"handler": "static_response",
+				"status_code": 404,
+				"body": "Caddy K8s Router - No matching deployment",
+			},
+		},
+		"terminal": true,
+	}
+
+	if err := kr.postRouteToPath(ctx, serverPath, catchAllRoute); err != nil {
+		return fmt.Errorf("failed to create catch-all route: %w", err)
+	}
+	kr.logger.Info("Created catch-all route")
+
+	// 2. 创建 /healthz 路由（追加到末尾）
+	healthzRoute := map[string]any{
+		"@id": "__healthz__",
+		"match": []map[string]any{
+			{"host": []string{fmt.Sprintf("*.%s", kr.config.BaseDomain)}},
+			{"path": []string{"/healthz"}},
+		},
+		"handle": []map[string]any{
+			{
+				"handler": "static_response",
+				"status_code": 200,
+				"body": "OK",
+			},
+		},
+	}
+
+	if err := kr.postRouteToPath(ctx, serverPath, healthzRoute); err != nil {
+		return fmt.Errorf("failed to create healthz route: %w", err)
+	}
+	kr.logger.Info("Created healthz route")
+
+	kr.logger.Info("Base routes created successfully",
+		zap.String("order", "healthz (index 1), catch-all (index 0)"),
+	)
+
+	return nil
+}
+
+// postRouteToPath 通过 POST 请求添加路由到指定路径
+func (kr *K8sRouter) postRouteToPath(ctx context.Context, path string, routeConfig map[string]any) error {
+	payload, err := json.Marshal(routeConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal route config: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", path, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call Caddy Admin API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Caddy Admin API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // recoverTracker 从 Caddy Admin API 和 K8s 恢复 RouteIDTracker
 // 参考 gitness 的修复思路：不从 routeID 反推，而是通过 K8s Deployments 匹配
 // 使用 gitspace identifier（来自 deployment label）而不是 deployment name
 //
-// 关键修复：在恢复时重新排序路由，确保具体路由在通配符路由前面
-// 这样可以防止 Pod 重启后路由顺序错乱导致 404 问题
+// 在新架构中，recoverTracker 只恢复 tracker 映射，不再重新排序路由
+// 因为基础路由（__healthz__, __catch_all__）已经通过 createBaseRoutes 创建
+// 动态路由通过 /routes/0 插入到最前面，顺序自然正确
 func (kr *K8sRouter) recoverTracker() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// 1. 从 Caddy 获取所有路由
@@ -282,9 +395,13 @@ func (kr *K8sRouter) recoverTracker() error {
 		return err
 	}
 
-	// 构建 routeID -> route 映射
+	// 构建 routeID -> route 映射（只关注动态路由，忽略基础路由）
 	routeMap := make(map[string]*router.RouteConfig)
 	for _, route := range routes {
+		// 忽略基础路由
+		if route.ID == "__healthz__" || route.ID == "__catch_all__" {
+			continue
+		}
 		routeMap[route.ID] = route
 	}
 
@@ -294,17 +411,9 @@ func (kr *K8sRouter) recoverTracker() error {
 		return fmt.Errorf("failed to list deployments: %w", err)
 	}
 
-	// 3. 收集需要恢复的路由配置
-	type recoverRouteInfo struct {
-		routeID            string
-		gitspaceIdentifier string
-		deploymentKey      string
-		deploymentName     string
-		route              *router.RouteConfig
-	}
-	routesToRecover := []recoverRouteInfo{}
+	// 3. 遍历 Deployments，恢复 tracker 映射
+	recoveredCount := 0
 	skippedCount := 0
-
 	for i := range deployments.Items {
 		deployment := &deployments.Items[i]
 
@@ -324,94 +433,21 @@ func (kr *K8sRouter) recoverTracker() error {
 		// 检查 Caddy 中是否存在对应的路由
 		if route, exists := routeMap[routeID]; exists {
 			deploymentKey := fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name)
-			routesToRecover = append(routesToRecover, recoverRouteInfo{
-				routeID:            routeID,
-				gitspaceIdentifier: gitspaceIdentifier,
-				deploymentKey:      deploymentKey,
-				deploymentName:     deployment.Name,
-				route:              route,
-			})
-		}
-	}
-
-	// 4. 如果有路由需要恢复，先删除再重新插入到索引 0
-	//    这样可以确保具体路由在通配符路由前面
-	if len(routesToRecover) > 0 {
-		kr.logger.Info("Reordering routes to ensure specific routes come first",
-			zap.Int("routes_to_reorder", len(routesToRecover)),
-		)
-
-		// 4.1 删除所有需要恢复的路由
-		for _, info := range routesToRecover {
-			if err := kr.adminClient.DeleteRoute(ctx, info.routeID); err != nil {
-				kr.logger.Warn("Failed to delete route for reordering",
-					zap.String("route_id", info.routeID),
-					zap.Error(err),
-				)
-				// 继续处理其他路由
-			} else {
-				kr.logger.Debug("Deleted route for reordering",
-					zap.String("route_id", info.routeID),
-				)
-			}
-		}
-
-		// 4.2 重新插入所有路由到索引 0（倒序插入，保持原有相对顺序）
-		//     最后插入的会在最前面
-		for i := len(routesToRecover) - 1; i >= 0; i-- {
-			info := routesToRecover[i]
-
-			// 从现有路由配置中获取 domain 和 targetAddr
-			domain := info.route.Domain
-			targetAddr := info.route.TargetAddr
-
-			// 解析 targetAddr (格式: "ip:port")
-			parts := strings.Split(targetAddr, ":")
-			if len(parts) != 2 {
-				kr.logger.Error("Invalid targetAddr format during recovery",
-					zap.String("route_id", info.routeID),
-					zap.String("target_addr", targetAddr),
-				)
-				continue
-			}
-			podIP := parts[0]
-			port, err := strconv.Atoi(parts[1])
-			if err != nil {
-				kr.logger.Error("Invalid port in targetAddr during recovery",
-					zap.String("route_id", info.routeID),
-					zap.String("target_addr", targetAddr),
-					zap.Error(err),
-				)
-				continue
-			}
-
-			// 重新创建路由
-			err = kr.adminClient.CreateRoute(ctx, info.routeID, domain, podIP, port)
-			if err != nil {
-				kr.logger.Error("Failed to recreate route during recovery",
-					zap.String("route_id", info.routeID),
-					zap.Error(err),
-				)
-				continue
-			}
-
-			// 恢复 tracker 映射
-			kr.tracker.Set(info.deploymentKey, info.routeID, targetAddr)
-
-			kr.logger.Info("Recovered and reordered route",
-				zap.String("route_id", info.routeID),
-				zap.String("deployment", info.deploymentName),
-				zap.String("gitspace_identifier", info.gitspaceIdentifier),
-				zap.String("deployment_key", info.deploymentKey),
-				zap.String("domain", domain),
-				zap.String("target_addr", targetAddr),
+			kr.tracker.Set(deploymentKey, route.ID, route.TargetAddr)
+			kr.logger.Info("Recovered route",
+				zap.String("route_id", route.ID),
+				zap.String("deployment", deployment.Name),
+				zap.String("gitspace_identifier", gitspaceIdentifier),
+				zap.String("deployment_key", deploymentKey),
+				zap.String("target_addr", route.TargetAddr),
 			)
+			recoveredCount++
 		}
 	}
 
-	kr.logger.Info("Tracker recovered with route reordering",
+	kr.logger.Info("Tracker recovered",
 		zap.Int("total_routes", len(routes)),
-		zap.Int("recovered_mappings", len(routesToRecover)),
+		zap.Int("recovered_mappings", recoveredCount),
 		zap.Int("skipped_deployments", skippedCount),
 	)
 

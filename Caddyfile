@@ -17,7 +17,7 @@
 	}
 }
 
-# HTTPS 通配符域名
+# HTTPS 通配符域名 - 只配置 TLS，路由由插件动态管理
 *.{$BASE_DOMAIN:example.com} {
 	tls {
 		dns alidns {
@@ -26,7 +26,11 @@
 		}
 	}
 
-	handle /healthz {
-		respond "OK" 200
-	}
+	# 不定义任何路由
+	# 所有路由（包括 /healthz 和 catch-all）由 k8s_router 插件通过 Admin API 动态创建
+	# 这样可以完全控制路由顺序：
+	# [0] specific-route-1.flow.biz     (插件创建)
+	# [1] specific-route-2.flow.biz     (插件创建)
+	# [2] *.flow.biz /healthz           (插件创建)
+	# [3] *.flow.biz catch-all 404      (插件创建)
 }
