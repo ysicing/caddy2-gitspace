@@ -2,39 +2,37 @@ package router
 
 import (
 	"errors"
-	"fmt"
 	"strings"
-)
-
-const (
-	// RouteIDPrefixNew 是新的路由 ID 前缀，使用冒号分隔，避免与 Kubernetes 合法字符冲突。
-	RouteIDPrefixNew = "gitspace:"
 )
 
 var ErrInvalidRouteIDFormat = errors.New("invalid route id format")
 
-// BuildRouteID 根据 gitspace identifier 构造稳定的路由 ID。
-// 采用冒号分隔，避免与 Kubernetes 允许的 DNS-1123 标签字符冲突。
+// BuildRouteID 根据 gitspace identifier 构造路由 ID。
+// 由于 Caddy 实例专用于 gitspace，直接使用 identifier，无需前缀。
 func BuildRouteID(gitspaceIdentifier string) string {
-	return fmt.Sprintf("%s:%s", RouteIDPrefixNew, gitspaceIdentifier)
+	return gitspaceIdentifier
 }
 
 // ParseRouteID 解析路由 ID，返回 gitspace identifier。
-// namespace 已固定在配置中，不需要从 RouteID 解析。
+// 由于没有前缀，直接返回 routeID 本身。
 func ParseRouteID(routeID string) (string, error) {
-	if strings.HasPrefix(routeID, RouteIDPrefixNew) {
-		gitspaceIdentifier := strings.TrimPrefix(routeID, RouteIDPrefixNew)
-		if gitspaceIdentifier == "" {
-			return "", fmt.Errorf("%w: %s", ErrInvalidRouteIDFormat, routeID)
-		}
-		return gitspaceIdentifier, nil
+	if routeID == "" {
+		return "", ErrInvalidRouteIDFormat
 	}
-
-	return "", fmt.Errorf("%w: %s", ErrInvalidRouteIDFormat, routeID)
+	return routeID, nil
 }
 
 // IsManagedRouteID 判断给定路由 ID 是否由插件创建。
-// 支持新的冒号格式以及遗留的连字符格式。
+// 由于 Caddy 实例专用于 gitspace，所有非空且不包含路径分隔符的 ID 都认为是插件管理的。
 func IsManagedRouteID(routeID string) bool {
-	return strings.HasPrefix(routeID, RouteIDPrefixNew)
+	if routeID == "" {
+		return false
+	}
+
+	// 排除明显不是我们管理的路由（如包含特殊路径字符）
+	if strings.Contains(routeID, "/") || strings.Contains(routeID, "\\") {
+		return false
+	}
+
+	return true
 }
